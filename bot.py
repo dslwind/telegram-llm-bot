@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import os
 import sqlite3
@@ -285,10 +286,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-async def stream_llm_answer(user_id: int, user_text: str, out_message: Message) -> str:
-    messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+async def stream_llm_answer(
+    user_id: int, user_content: str | list, out_message: Message,
+) -> str:
+    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(await asyncio.to_thread(chat_store.get_recent_messages, user_id, MAX_HISTORY_MESSAGES))
-    messages.append({"role": "user", "content": user_text})
+    messages.append({"role": "user", "content": user_content})
 
     full_text = ""
     last_sent_text = ""
@@ -334,37 +337,24 @@ async def stream_llm_answer(user_id: int, user_text: str, out_message: Message) 
     return answer
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text or not update.effective_user:
+async def _respond(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_content: str | list,
+    history_text: str,
+) -> None:
+    """Shared logic: send typing indicator, stream LLM reply, persist history."""
+    user_id = update.effective_user.id  # type: ignore[union-attr]
+    if not update.effective_chat or not update.message:
         return
-
-    user_id = update.effective_user.id
-    if not authorized(user_id):
-        await update.message.reply_text("Access denied for this bot.")
-        return
-
-    allowed, retry_after = rate_limiter.allow(user_id)
-    if not allowed:
-        await update.message.reply_text(
-            f"Rate limit exceeded. Try again in about {retry_after} seconds."
-        )
-        return
-
-    user_text = update.message.text.strip()
-    if not user_text:
-        return
-
-    if not update.effective_chat:
-        return
-
     try:
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id,
             action=ChatAction.TYPING,
         )
         out_message = await update.message.reply_text("Thinking...")
-        answer = await stream_llm_answer(user_id, user_text, out_message)
-        await asyncio.to_thread(chat_store.append_message, user_id, "user", user_text)
+        answer = await stream_llm_answer(user_id, user_content, out_message)
+        await asyncio.to_thread(chat_store.append_message, user_id, "user", history_text)
         await asyncio.to_thread(chat_store.append_message, user_id, "assistant", answer)
     except Exception:
         logging.exception("Failed to process message")
@@ -374,6 +364,56 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         except Exception:
             logging.exception("Failed to send error reply")
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text or not update.effective_user:
+        return
+    user_id = update.effective_user.id
+    if not authorized(user_id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+    allowed, retry_after = rate_limiter.allow(user_id)
+    if not allowed:
+        await update.message.reply_text(
+            f"Rate limit exceeded. Try again in about {retry_after} seconds."
+        )
+        return
+    user_text = update.message.text.strip()
+    if not user_text:
+        return
+    await _respond(update, context, user_text, user_text)
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.photo or not update.effective_user:
+        return
+    user_id = update.effective_user.id
+    if not authorized(user_id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+    allowed, retry_after = rate_limiter.allow(user_id)
+    if not allowed:
+        await update.message.reply_text(
+            f"Rate limit exceeded. Try again in about {retry_after} seconds."
+        )
+        return
+
+    caption = (update.message.caption or "").strip()
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    data = await file.download_as_bytearray()
+    b64 = base64.b64encode(data).decode()
+
+    user_content: list[dict] = []
+    if caption:
+        user_content.append({"type": "text", "text": caption})
+    user_content.append({
+        "type": "image_url",
+        "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+    })
+
+    await _respond(update, context, user_content, caption or "[image]")
 
 
 def main() -> None:
@@ -393,6 +433,7 @@ def main() -> None:
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     try:
         app.run_polling(drop_pending_updates=True)
