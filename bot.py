@@ -1,7 +1,9 @@
 import asyncio
 import base64
+import html
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -200,17 +202,59 @@ def split_text_for_telegram(text: str) -> list[str]:
     return chunks
 
 
-async def finalize_reply(message: Message, text: str) -> None:
-    chunks = split_text_for_telegram(text)
+def markdown_to_telegram_html(text: str) -> str:
+    if not text:
+        return text
 
-    async def _edit_with_markdown_fallback(content: str) -> None:
+    slots: dict[str, str] = {}
+    slot_index = 0
+
+    def stash(value: str) -> str:
+        nonlocal slot_index
+        key = f"TGSLOT{slot_index}TOKEN"
+        slot_index += 1
+        slots[key] = value
+        return key
+
+    def replace_code_block(match: re.Match[str]) -> str:
+        code_text = match.group(1).strip("\n")
+        return stash(f"<pre><code>{html.escape(code_text)}</code></pre>")
+
+    def replace_inline_code(match: re.Match[str]) -> str:
+        return stash(f"<code>{html.escape(match.group(1))}</code>")
+
+    def replace_link(match: re.Match[str]) -> str:
+        label = html.escape(match.group(1))
+        url = html.escape(match.group(2), quote=True)
+        return stash(f'<a href="{url}">{label}</a>')
+
+    text = re.sub(r"```(?:[^\n`]*)\n?(.*?)```", replace_code_block, text, flags=re.DOTALL)
+    text = re.sub(r"`([^`\n]+)`", replace_inline_code, text)
+    text = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", replace_link, text)
+
+    escaped = html.escape(text)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped, flags=re.DOTALL)
+    escaped = re.sub(r"~~(.+?)~~", r"<s>\1</s>", escaped, flags=re.DOTALL)
+    escaped = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", r"<i>\1</i>", escaped, flags=re.DOTALL)
+    escaped = re.sub(r"(?<!_)_(?!\s)(.+?)(?<!\s)_(?!_)", r"<i>\1</i>", escaped, flags=re.DOTALL)
+
+    for key, value in slots.items():
+        escaped = escaped.replace(key, value)
+
+    return escaped
+
+
+async def finalize_reply(message: Message, text: str) -> None:
+    chunks = [markdown_to_telegram_html(chunk) for chunk in split_text_for_telegram(text)]
+
+    async def _edit_with_markup_fallback(content: str) -> None:
         try:
-            await message.edit_text(content, parse_mode=ParseMode.MARKDOWN)
+            await message.edit_text(content, parse_mode=ParseMode.HTML)
             return
         except RetryAfter as e:
             await asyncio.sleep(e.retry_after)
             try:
-                await message.edit_text(content, parse_mode=ParseMode.MARKDOWN)
+                await message.edit_text(content, parse_mode=ParseMode.HTML)
                 return
             except (BadRequest, RetryAfter):
                 pass
@@ -228,14 +272,14 @@ async def finalize_reply(message: Message, text: str) -> None:
         except BadRequest:
             pass
 
-    async def _reply_with_markdown_fallback(content: str) -> None:
+    async def _reply_with_markup_fallback(content: str) -> None:
         try:
-            await message.reply_text(content, parse_mode=ParseMode.MARKDOWN)
+            await message.reply_text(content, parse_mode=ParseMode.HTML)
             return
         except RetryAfter as e:
             await asyncio.sleep(e.retry_after)
             try:
-                await message.reply_text(content, parse_mode=ParseMode.MARKDOWN)
+                await message.reply_text(content, parse_mode=ParseMode.HTML)
                 return
             except (BadRequest, RetryAfter):
                 pass
@@ -253,9 +297,9 @@ async def finalize_reply(message: Message, text: str) -> None:
         except BadRequest:
             pass
 
-    await _edit_with_markdown_fallback(chunks[0])
+    await _edit_with_markup_fallback(chunks[0])
     for chunk in chunks[1:]:
-        await _reply_with_markdown_fallback(chunk)
+        await _reply_with_markup_fallback(chunk)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
