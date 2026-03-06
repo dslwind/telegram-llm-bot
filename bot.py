@@ -233,6 +233,9 @@ def markdown_to_telegram_html(text: str) -> str:
     text = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", replace_link, text)
 
     escaped = html.escape(text)
+    escaped = re.sub(r"(?m)^\s*#{1,6}\s+(.+)$", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"(?m)^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", "────────", escaped)
+    escaped = re.sub(r"(?m)^(\s*)[-*]\s+(.+)$", r"\1• \2", escaped)
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped, flags=re.DOTALL)
     escaped = re.sub(r"~~(.+?)~~", r"<s>\1</s>", escaped, flags=re.DOTALL)
     escaped = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", r"<i>\1</i>", escaped, flags=re.DOTALL)
