@@ -32,21 +32,24 @@ Copy `.env.example` to `.env` and fill in values:
 - `STREAM_EDIT_INTERVAL_SECONDS`: minimum seconds between Telegram edits
 - `STREAM_MIN_CHARS_DELTA`: minimum new characters before next edit
 
-## 3) Install dependencies (Conda)
-### Option A: Use existing env (`llm`)
-```powershell
-& 'D:\Programs\miniforge3\Scripts\conda.exe' run -n llm pip install -r requirements.txt
+## 3) Install dependencies
+### Option A: pip (venv)
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-### Option B: Create dedicated env
-```powershell
-& 'D:\Programs\miniforge3\Scripts\conda.exe' create -n tg-bot python=3.11 -y
-& 'D:\Programs\miniforge3\Scripts\conda.exe' run -n tg-bot pip install -r requirements.txt
+### Option B: Conda
+```bash
+conda create -n tg-bot python=3.11 -y
+conda activate tg-bot
+pip install -r requirements.txt
 ```
 
 ## 4) Run locally
-```powershell
-& 'D:\Programs\miniforge3\Scripts\conda.exe' run -n llm python bot.py
+```bash
+python bot.py
 ```
 
 If you used `tg-bot`, replace `llm` with `tg-bot`.
