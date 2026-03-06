@@ -5,13 +5,12 @@ import sqlite3
 import threading
 import time
 from collections import defaultdict, deque
-from typing import Deque, Dict, List
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from telegram import Message, Update
 from telegram.constants import ChatAction
-from telegram.error import BadRequest
+from telegram.error import BadRequest, RetryAfter
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 load_dotenv()
@@ -96,7 +95,7 @@ class SQLiteChatStore:
             )
             self._conn.commit()
 
-    def get_recent_messages(self, user_id: int, limit: int) -> List[dict[str, str]]:
+    def get_recent_messages(self, user_id: int, limit: int) -> list[dict[str, str]]:
         with self._lock:
             rows = self._conn.execute(
                 """
@@ -127,7 +126,7 @@ class SlidingWindowRateLimiter:
     def __init__(self, max_requests: int, window_seconds: int) -> None:
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        self.events: Dict[int, Deque[float]] = defaultdict(deque)
+        self.events: dict[int, deque[float]] = defaultdict(deque)
         self.lock = threading.Lock()
         self._calls_since_purge = 0
 
@@ -204,6 +203,12 @@ async def finalize_reply(message: Message, text: str) -> None:
     chunks = split_text_for_telegram(text)
     try:
         await message.edit_text(chunks[0])
+    except RetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        try:
+            await message.edit_text(chunks[0])
+        except (BadRequest, RetryAfter):
+            pass
     except BadRequest:
         pass
     for chunk in chunks[1:]:
@@ -219,6 +224,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(
         "Hi, I am ready. Send me any message and I will stream an LLM reply.\n"
         "Commands:\n"
+        "/new - start a new session\n"
+        "/model - show model information\n"
         "/reset - clear your conversation history"
     )
 
@@ -233,6 +240,33 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("Your conversation history has been cleared.")
 
 
+async def new_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+    await asyncio.to_thread(chat_store.clear_user_history, update.effective_user.id)
+    await update.message.reply_text("Started a new session. Previous context was cleared.")
+
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+    base_url = OPENAI_BASE_URL or "https://api.openai.com/v1 (default)"
+    await update.message.reply_text(
+        "Current model settings:\n"
+        f"- model: {OPENAI_MODEL}\n"
+        f"- base_url: {base_url}\n"
+        f"- max_history_pairs: {MAX_HISTORY_PAIRS}\n"
+        f"- rate_limit: {RATE_LIMIT_COUNT} requests / {RATE_LIMIT_WINDOW_SECONDS}s\n"
+        "- streaming: enabled"
+    )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
@@ -240,6 +274,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Access denied for this bot.")
         return
     await update.message.reply_text(
+        "Commands:\n"
+        "/new - start a new session\n"
+        "/model - show model information\n"
+        "/reset - clear your conversation history\n\n"
         "Set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY in .env, then chat directly.\n"
         "Optional envs: OPENAI_MODEL, OPENAI_BASE_URL, MAX_HISTORY_PAIRS, "
         "SYSTEM_PROMPT, SQLITE_PATH, WHITELIST_USER_IDS, RATE_LIMIT_COUNT, "
@@ -285,6 +323,8 @@ async def stream_llm_answer(user_id: int, user_text: str, out_message: Message) 
                 try:
                     await out_message.edit_text(preview)
                     last_sent_text = preview
+                except RetryAfter as e:
+                    await asyncio.sleep(e.retry_after)
                 except BadRequest:
                     pass
                 last_edit_at = now
@@ -323,14 +363,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             action=ChatAction.TYPING,
         )
         out_message = await update.message.reply_text("Thinking...")
-        await asyncio.to_thread(chat_store.append_message, user_id, "user", user_text)
         answer = await stream_llm_answer(user_id, user_text, out_message)
+        await asyncio.to_thread(chat_store.append_message, user_id, "user", user_text)
         await asyncio.to_thread(chat_store.append_message, user_id, "assistant", answer)
     except Exception:
         logging.exception("Failed to process message")
-        await update.message.reply_text(
-            "Request failed. Check your API key/model/config and try again."
-        )
+        try:
+            await update.message.reply_text(
+                "Request failed. Check your API key/model/config and try again."
+            )
+        except Exception:
+            logging.exception("Failed to send error reply")
 
 
 def main() -> None:
@@ -345,6 +388,8 @@ def main() -> None:
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler(["new", "newchat"], new_session_command))
+    app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

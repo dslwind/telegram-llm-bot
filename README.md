@@ -5,11 +5,18 @@ A Telegram bot that forwards user messages to an LLM and streams replies back.
 ## Features
 - Streaming response (edits Telegram message while model is generating)
 - SQLite persistent chat history per user
+- `/new` command to start a new session
+- `/model` command to show current model settings
 - `/reset` command to clear user history from SQLite
 - User whitelist (optional)
 - Per-user rate limiting (sliding window)
 - Supports official OpenAI endpoint or OpenAI-compatible endpoint
 - Docker deployment support
+
+## Commands
+- `/new`: clear current user history and start a new session
+- `/model`: show current model, endpoint, context, and rate-limit settings
+- `/reset`: clear current user history
 
 ## 1) Create your Telegram bot token
 1. Open Telegram and talk to `@BotFather`
@@ -51,8 +58,6 @@ pip install -r requirements.txt
 ```bash
 python bot.py
 ```
-
-If you used `tg-bot`, replace `llm` with `tg-bot`.
 
 ## 5) Run with Docker
 ```powershell
