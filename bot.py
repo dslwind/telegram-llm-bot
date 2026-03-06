@@ -10,7 +10,7 @@ from collections import defaultdict, deque
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from telegram import Message, Update
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest, RetryAfter
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
@@ -202,18 +202,60 @@ def split_text_for_telegram(text: str) -> list[str]:
 
 async def finalize_reply(message: Message, text: str) -> None:
     chunks = split_text_for_telegram(text)
-    try:
-        await message.edit_text(chunks[0])
-    except RetryAfter as e:
-        await asyncio.sleep(e.retry_after)
+
+    async def _edit_with_markdown_fallback(content: str) -> None:
         try:
-            await message.edit_text(chunks[0])
-        except (BadRequest, RetryAfter):
+            await message.edit_text(content, parse_mode=ParseMode.MARKDOWN)
+            return
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            try:
+                await message.edit_text(content, parse_mode=ParseMode.MARKDOWN)
+                return
+            except (BadRequest, RetryAfter):
+                pass
+        except BadRequest:
             pass
-    except BadRequest:
-        pass
+
+        try:
+            await message.edit_text(content)
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            try:
+                await message.edit_text(content)
+            except (BadRequest, RetryAfter):
+                pass
+        except BadRequest:
+            pass
+
+    async def _reply_with_markdown_fallback(content: str) -> None:
+        try:
+            await message.reply_text(content, parse_mode=ParseMode.MARKDOWN)
+            return
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            try:
+                await message.reply_text(content, parse_mode=ParseMode.MARKDOWN)
+                return
+            except (BadRequest, RetryAfter):
+                pass
+        except BadRequest:
+            pass
+
+        try:
+            await message.reply_text(content)
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            try:
+                await message.reply_text(content)
+            except (BadRequest, RetryAfter):
+                pass
+        except BadRequest:
+            pass
+
+    await _edit_with_markdown_fallback(chunks[0])
     for chunk in chunks[1:]:
-        await message.reply_text(chunk)
+        await _reply_with_markdown_fallback(chunk)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -443,3 +485,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
