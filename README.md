@@ -6,7 +6,7 @@ A Telegram bot that forwards user messages to an LLM and streams replies back.
 - Streaming response (edits Telegram message while model is generating)
 - SQLite persistent chat history per user
 - `/new` command to start a new session
-- `/model` command to show current model settings
+- `/model` command to show/switch current model
 - `/models` command to fetch model list from API
 - `/reset` command to clear user history from SQLite
 - User whitelist (optional)
@@ -16,7 +16,8 @@ A Telegram bot that forwards user messages to an LLM and streams replies back.
 
 ## Commands
 - `/new`: clear current user history and start a new session
-- `/model`: show current model, endpoint, context, and rate-limit settings
+- `/model`: show current model, default model, endpoint, context, and rate-limit settings
+- `/model <model_id>`: switch current user to a specific model ID
 - `/models`: fetch available model IDs from API
 - `/reset`: clear current user history
 

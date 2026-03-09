@@ -177,6 +177,7 @@ if OPENAI_BASE_URL:
 llm_client = AsyncOpenAI(**client_kwargs)
 chat_store = SQLiteChatStore(SQLITE_PATH)
 rate_limiter = SlidingWindowRateLimiter(RATE_LIMIT_COUNT, RATE_LIMIT_WINDOW_SECONDS)
+selected_models: dict[int, str] = {}
 
 
 def authorized(user_id: int) -> bool:
@@ -315,7 +316,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Hi, I am ready. Send me any message and I will stream an LLM reply.\n"
         "Commands:\n"
         "/new - start a new session\n"
-        "/model - show model information\n"
+        "/model - show current model settings\n"
+        "/model <model_id> - switch to a specific model\n"
         "/models - list available models from API\n"
         "/reset - clear your conversation history"
     )
@@ -347,14 +349,70 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not authorized(update.effective_user.id):
         await update.message.reply_text("Access denied for this bot.")
         return
+    user_id = update.effective_user.id
     base_url = OPENAI_BASE_URL or "https://api.openai.com/v1 (default)"
+    current_model = selected_models.get(user_id, OPENAI_MODEL)
+
+    requested_model = " ".join(context.args).strip()
+    if not requested_model:
+        await update.message.reply_text(
+            "Current model settings:\n"
+            f"- current_model: {current_model}\n"
+            f"- default_model: {OPENAI_MODEL}\n"
+            f"- base_url: {base_url}\n"
+            f"- max_history_pairs: {MAX_HISTORY_PAIRS}\n"
+            f"- rate_limit: {RATE_LIMIT_COUNT} requests / {RATE_LIMIT_WINDOW_SECONDS}s\n"
+            "- streaming: enabled\n\n"
+            "Usage:\n"
+            "- /model : show current model\n"
+            "- /model <model_id> : switch model"
+        )
+        return
+
+    try:
+        models = await llm_client.models.list()
+        items = getattr(models, "data", None)
+        if items is None:
+            try:
+                items = list(models)
+            except TypeError:
+                items = []
+    except Exception:
+        logging.exception("Failed to fetch model list for /model")
+        await update.message.reply_text(
+            "Failed to validate model ID from API. Check API key/base URL and try again."
+        )
+        return
+
+    available_ids: list[str] = []
+    for item in items:
+        model_id = getattr(item, "id", None)
+        if model_id is None and isinstance(item, dict):
+            model_id = item.get("id")
+        if isinstance(model_id, str) and model_id:
+            available_ids.append(model_id)
+
+    available_set = set(available_ids)
+    if requested_model in available_set:
+        selected_models[user_id] = requested_model
+        await update.message.reply_text(
+            f"Model switched to: {requested_model}\n"
+            f"(default in config is: {OPENAI_MODEL})"
+        )
+        return
+
+    prefix_matches = sorted([m for m in available_set if m.startswith(requested_model)])
+    if prefix_matches:
+        hint = "\n".join(f"- {m}" for m in prefix_matches[:10])
+        extra = "\n..." if len(prefix_matches) > 10 else ""
+        await update.message.reply_text(
+            "Model ID seems incomplete. Please provide a full model ID.\n"
+            f"Matches:\n{hint}{extra}"
+        )
+        return
+
     await update.message.reply_text(
-        "Current model settings:\n"
-        f"- model: {OPENAI_MODEL}\n"
-        f"- base_url: {base_url}\n"
-        f"- max_history_pairs: {MAX_HISTORY_PAIRS}\n"
-        f"- rate_limit: {RATE_LIMIT_COUNT} requests / {RATE_LIMIT_WINDOW_SECONDS}s\n"
-        "- streaming: enabled"
+        "Invalid model ID. Use /models to list valid model IDs, then run /model <model_id>."
     )
 
 
@@ -406,7 +464,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "Commands:\n"
         "/new - start a new session\n"
-        "/model - show model information\n"
+        "/model - show current model settings\n"
+        "/model <model_id> - switch to a specific model\n"
         "/models - list available models from API\n"
         "/reset - clear your conversation history\n\n"
         "Set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY in .env, then chat directly.\n"
@@ -426,9 +485,10 @@ async def stream_llm_answer(
     full_text = ""
     last_sent_text = ""
     last_edit_at = 0.0
+    active_model = selected_models.get(user_id, OPENAI_MODEL)
 
     stream = await llm_client.chat.completions.create(
-        model=OPENAI_MODEL,
+        model=active_model,
         messages=messages,
         stream=True,
         timeout=120,
