@@ -445,9 +445,54 @@ async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await update.message.reply_text("No models returned by API.")
             return
 
-        text = "Available models:\n" + "\n".join(f"- {model_id}" for model_id in ids)
-        for chunk in split_text_for_telegram(text):
-            await update.message.reply_text(chunk)
+        formatted_pairs = [
+            (f"<code>{html.escape(model_id)}</code>", model_id) for model_id in ids
+        ]
+        prefix = "Available models:\n"
+        combined = prefix + "\n".join(html_line for html_line, _ in formatted_pairs)
+
+        async def send_html_or_plain(html_content: str, plain_content: str) -> None:
+            try:
+                await update.message.reply_text(html_content, parse_mode=ParseMode.HTML)
+            except RetryAfter as e:
+                await asyncio.sleep(e.retry_after)
+                await update.message.reply_text(html_content, parse_mode=ParseMode.HTML)
+            except BadRequest:
+                await update.message.reply_text(plain_content)
+
+        if len(combined) <= TELEGRAM_TEXT_LIMIT:
+            plain = "Available models:\n" + "\n".join(ids)
+            await send_html_or_plain(combined, plain)
+            return
+
+        chunk_limit = TELEGRAM_TEXT_LIMIT - len(prefix)
+        html_chunks: list[str] = []
+        plain_chunks: list[str] = []
+        current_html: list[str] = []
+        current_plain: list[str] = []
+        current_len = 0
+
+        for html_line, plain_line in formatted_pairs:
+            added = len(html_line) if not current_html else len(html_line) + 1
+            if current_html and current_len + added > chunk_limit:
+                html_chunks.append("\n".join(current_html))
+                plain_chunks.append("\n".join(current_plain))
+                current_html = [html_line]
+                current_plain = [plain_line]
+                current_len = len(html_line)
+            else:
+                current_html.append(html_line)
+                current_plain.append(plain_line)
+                current_len += added
+
+        if current_html:
+            html_chunks.append("\n".join(current_html))
+            plain_chunks.append("\n".join(current_plain))
+
+        for index, html_chunk in enumerate(html_chunks):
+            html_message = (prefix + html_chunk) if index == 0 else html_chunk
+            plain_message = (prefix + plain_chunks[index]) if index == 0 else plain_chunks[index]
+            await send_html_or_plain(html_message, plain_message)
     except Exception:
         logging.exception("Failed to list models")
         await update.message.reply_text(
