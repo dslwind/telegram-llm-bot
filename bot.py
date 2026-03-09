@@ -316,6 +316,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Commands:\n"
         "/new - start a new session\n"
         "/model - show model information\n"
+        "/models - list available models from API\n"
         "/reset - clear your conversation history"
     )
 
@@ -357,6 +358,45 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+
+    try:
+        models = await llm_client.models.list()
+        items = getattr(models, "data", None)
+        if items is None:
+            try:
+                items = list(models)
+            except TypeError:
+                items = []
+
+        ids: list[str] = []
+        for item in items:
+            model_id = getattr(item, "id", None)
+            if model_id is None and isinstance(item, dict):
+                model_id = item.get("id")
+            if isinstance(model_id, str) and model_id:
+                ids.append(model_id)
+
+        ids = sorted(set(ids))
+        if not ids:
+            await update.message.reply_text("No models returned by API.")
+            return
+
+        text = "Available models:\n" + "\n".join(f"- {model_id}" for model_id in ids)
+        for chunk in split_text_for_telegram(text):
+            await update.message.reply_text(chunk)
+    except Exception:
+        logging.exception("Failed to list models")
+        await update.message.reply_text(
+            "Failed to fetch model list. Check API key/base URL and try again."
+        )
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.effective_user:
         return
@@ -367,6 +407,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Commands:\n"
         "/new - start a new session\n"
         "/model - show model information\n"
+        "/models - list available models from API\n"
         "/reset - clear your conversation history\n\n"
         "Set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY in .env, then chat directly.\n"
         "Optional envs: OPENAI_MODEL, OPENAI_BASE_URL, MAX_HISTORY_PAIRS, "
@@ -519,6 +560,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler(["new", "newchat"], new_session_command))
     app.add_handler(CommandHandler("model", model_command))
+    app.add_handler(CommandHandler("models", models_command))
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
@@ -532,4 +574,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
