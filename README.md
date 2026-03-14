@@ -5,8 +5,9 @@ A Telegram bot that forwards user messages to an LLM and streams replies back.
 ## Features
 - Streaming response (edits Telegram message while model is generating)
 - SQLite persistent chat history per user
+- Persistent runtime LLM config stored in `data/config.json`
 - `/new` command to start a new session
-- `/model` command to show/switch current model
+- `/model` command to show/switch the global current model
 - `/models` command to open a button-based model picker
 - `/reset` command to clear user history from SQLite
 - User whitelist (optional)
@@ -16,9 +17,9 @@ A Telegram bot that forwards user messages to an LLM and streams replies back.
 
 ## Commands
 - `/new`: clear current user history and start a new session
-- `/model`: show current model, default model, endpoint, context, and rate-limit settings
-- `/model <model_id>`: switch current user to a specific model ID
-- `/models`: open a button menu with available model IDs and switch by tapping
+- `/model`: show current global model, `.env` default model, endpoint, config path, context, and rate-limit settings
+- `/model <model_id>`: switch the global model and persist it to `data/config.json`
+- `/models`: open a button menu with available model IDs and switch the global model by tapping
 - `/reset`: clear current user history
 
 ## 1) Create your Telegram bot token
@@ -29,10 +30,12 @@ A Telegram bot that forwards user messages to an LLM and streams replies back.
 ## 2) Configure environment variables
 Copy `.env.example` to `.env` and fill in values:
 
+- `.env` stores default values used on first start.
+- On startup, the bot creates `data/config.json` if it does not exist, then uses that file as the runtime override source on later restarts.
 - `TELEGRAM_BOT_TOKEN`: from BotFather
-- `OPENAI_API_KEY`: your LLM API key
-- `OPENAI_MODEL`: default `gpt-4.1-mini`
-- `OPENAI_BASE_URL`: optional; set only if using OpenAI-compatible provider
+- `OPENAI_API_KEY`: default LLM API key; copied into `data/config.json` on first start
+- `OPENAI_MODEL`: default model; used when `data/config.json` is missing or incomplete
+- `OPENAI_BASE_URL`: default optional OpenAI-compatible endpoint; used when `data/config.json` is missing or incomplete
 - `SYSTEM_PROMPT`: optional assistant system prompt
 - `MAX_HISTORY_PAIRS`: history message pairs loaded from SQLite context
 - `SQLITE_PATH`: SQLite file path (default `./data/chat_history.db`)
@@ -70,7 +73,7 @@ docker compose up -d --build
 
 Required files for Docker run:
 - `.env` in project root
-- `./data` folder will be mounted for SQLite persistence
+- `./data` folder will be mounted for SQLite persistence and `config.json`
 
 Stop:
 ```powershell
@@ -81,3 +84,4 @@ docker compose down
 - Whitelist is disabled when `WHITELIST_USER_IDS` is empty.
 - Rate limit is applied only to text chat requests.
 - SQLite keeps full history; `MAX_HISTORY_PAIRS` controls how much context is loaded into prompts.
+- Runtime LLM config is loaded in this order: `.env` defaults, then `data/config.json` overrides.

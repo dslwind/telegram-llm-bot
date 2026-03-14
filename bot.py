@@ -1,13 +1,16 @@
 import asyncio
 import base64
 import html
+import json
 import logging
 import os
 import re
 import sqlite3
+import tempfile
 import threading
 import time
 from collections import defaultdict, deque
+from dataclasses import dataclass, replace
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -162,10 +165,135 @@ class SlidingWindowRateLimiter:
             return True, 0
 
 
+def normalize_optional_config_text(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def normalize_config_text(value: object, default: str) -> str:
+    normalized = normalize_optional_config_text(value)
+    return normalized if normalized is not None else default
+
+
+@dataclass(frozen=True)
+class LLMRuntimeConfig:
+    openai_api_key: str
+    openai_model: str
+    openai_base_url: str | None
+
+    def as_json(self) -> dict[str, str | None]:
+        return {
+            "openai_api_key": self.openai_api_key,
+            "openai_model": self.openai_model,
+            "openai_base_url": self.openai_base_url,
+        }
+
+
+class RuntimeConfigStore:
+    def __init__(self, config_path: str, default_config: LLMRuntimeConfig) -> None:
+        self.path = config_path
+        self._default_config = default_config
+        self._lock = threading.Lock()
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        self._config = self._load_initial_config()
+
+    def _merge_payload(self, payload: dict[str, object] | None) -> LLMRuntimeConfig:
+        payload = payload or {}
+        if "openai_base_url" in payload:
+            openai_base_url = normalize_optional_config_text(payload.get("openai_base_url"))
+        else:
+            openai_base_url = self._default_config.openai_base_url
+        return LLMRuntimeConfig(
+            openai_api_key=normalize_config_text(
+                payload.get("openai_api_key"),
+                self._default_config.openai_api_key,
+            ),
+            openai_model=normalize_config_text(
+                payload.get("openai_model"),
+                self._default_config.openai_model,
+            ),
+            openai_base_url=openai_base_url,
+        )
+
+    def _load_initial_config(self) -> LLMRuntimeConfig:
+        payload: dict[str, object] | None = None
+        should_create = False
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                raw_payload = json.load(handle)
+            if isinstance(raw_payload, dict):
+                payload = raw_payload
+            else:
+                logging.warning(
+                    "Runtime config %s must contain a JSON object; falling back to .env defaults.",
+                    self.path,
+                )
+        except FileNotFoundError:
+            should_create = True
+        except json.JSONDecodeError:
+            logging.exception(
+                "Failed to parse runtime config %s; falling back to .env defaults.",
+                self.path,
+            )
+        except OSError:
+            logging.exception(
+                "Failed to read runtime config %s; falling back to .env defaults.",
+                self.path,
+            )
+
+        config = self._merge_payload(payload)
+        if should_create:
+            with self._lock:
+                self._persist_locked(config)
+        return config
+
+    def _persist_locked(self, config: LLMRuntimeConfig) -> None:
+        directory = os.path.dirname(os.path.abspath(self.path))
+        fd, temp_path = tempfile.mkstemp(
+            dir=directory,
+            prefix=".config.",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(config.as_json(), handle, indent=2, ensure_ascii=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self.path)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def current(self) -> LLMRuntimeConfig:
+        with self._lock:
+            return self._config
+
+    def update_model(self, model_id: str) -> LLMRuntimeConfig:
+        normalized_model = normalize_optional_config_text(model_id)
+        if normalized_model is None:
+            raise ValueError("Model ID cannot be empty.")
+
+        with self._lock:
+            if normalized_model == self._config.openai_model:
+                return self._config
+            updated_config = replace(self._config, openai_model=normalized_model)
+            self._persist_locked(updated_config)
+            self._config = updated_config
+            return updated_config
+
+
 TELEGRAM_BOT_TOKEN = require_env("TELEGRAM_BOT_TOKEN")
-OPENAI_API_KEY = require_env("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL") or None
+CONFIG_PATH = "./data/config.json"
+DEFAULT_LLM_CONFIG = LLMRuntimeConfig(
+    openai_api_key=normalize_config_text(os.getenv("OPENAI_API_KEY"), ""),
+    openai_model=normalize_config_text(os.getenv("OPENAI_MODEL"), "gpt-4.1-mini"),
+    openai_base_url=normalize_optional_config_text(os.getenv("OPENAI_BASE_URL")),
+)
 SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
     "You are a helpful Telegram assistant. Answer clearly and briefly.",
@@ -180,21 +308,35 @@ STREAM_EDIT_INTERVAL_SECONDS = get_float_env("STREAM_EDIT_INTERVAL_SECONDS", 0.8
 STREAM_MIN_CHARS_DELTA = get_int_env("STREAM_MIN_CHARS_DELTA", 24)
 MODELS_MENU_PAGE_SIZE = get_int_env("MODELS_MENU_PAGE_SIZE", 8)
 
-client_kwargs = {"api_key": OPENAI_API_KEY}
-if OPENAI_BASE_URL:
-    client_kwargs["base_url"] = OPENAI_BASE_URL
+runtime_config_store = RuntimeConfigStore(CONFIG_PATH, DEFAULT_LLM_CONFIG)
+initial_runtime_config = runtime_config_store.current()
+if not initial_runtime_config.openai_api_key:
+    raise RuntimeError(
+        f"Missing LLM API key. Set OPENAI_API_KEY in .env or openai_api_key in {CONFIG_PATH}."
+    )
+
+client_kwargs = {"api_key": initial_runtime_config.openai_api_key}
+if initial_runtime_config.openai_base_url:
+    client_kwargs["base_url"] = initial_runtime_config.openai_base_url
 llm_client = AsyncOpenAI(**client_kwargs)
 chat_store = SQLiteChatStore(SQLITE_PATH)
 rate_limiter = SlidingWindowRateLimiter(RATE_LIMIT_COUNT, RATE_LIMIT_WINDOW_SECONDS)
-selected_models: dict[int, str] = {}
 
 
 def authorized(user_id: int) -> bool:
     return not WHITELIST_USER_IDS or user_id in WHITELIST_USER_IDS
 
 
-def get_active_model(user_id: int) -> str:
-    return selected_models.get(user_id, OPENAI_MODEL)
+def get_runtime_config() -> LLMRuntimeConfig:
+    return runtime_config_store.current()
+
+
+def get_active_model() -> str:
+    return get_runtime_config().openai_model
+
+
+def format_base_url(base_url: str | None) -> str:
+    return base_url or "https://api.openai.com/v1 (default)"
 
 
 def mask_secret(value: str, prefix: int = 6, suffix: int = 4) -> str:
@@ -206,10 +348,11 @@ def mask_secret(value: str, prefix: int = 6, suffix: int = 4) -> str:
 
 
 def get_models_source_label() -> str:
-    if not OPENAI_BASE_URL:
+    runtime_base_url = get_runtime_config().openai_base_url
+    if not runtime_base_url:
         return "api.openai.com/v1"
-    parsed = urlparse(OPENAI_BASE_URL)
-    host = parsed.netloc or OPENAI_BASE_URL
+    parsed = urlparse(runtime_base_url)
+    host = parsed.netloc or runtime_base_url
     path = parsed.path.rstrip("/")
     if path and path != "/":
         return f"{host}{path}"
@@ -236,19 +379,22 @@ async def fetch_available_model_ids() -> list[str]:
     return sorted(set(ids))
 
 
-def build_model_settings_text(user_id: int) -> str:
-    current_model = html.escape(get_active_model(user_id))
-    default_model = html.escape(OPENAI_MODEL)
-    base_url = html.escape(OPENAI_BASE_URL or "https://api.openai.com/v1 (default)")
+def build_model_settings_text() -> str:
+    runtime_config = get_runtime_config()
+    current_model = html.escape(runtime_config.openai_model)
+    default_model = html.escape(DEFAULT_LLM_CONFIG.openai_model)
+    base_url = html.escape(format_base_url(runtime_config.openai_base_url))
+    config_path = html.escape(CONFIG_PATH)
     return (
-        "<b>Current model settings</b>\n"
+        "<b>Current global model settings</b>\n"
         f"current_model: <code>{current_model}</code>\n"
-        f"default_model: <code>{default_model}</code>\n"
+        f"default_model_from_env: <code>{default_model}</code>\n"
         f"base_url: <code>{base_url}</code>\n"
+        f"config_path: <code>{config_path}</code>\n"
         f"max_history_pairs: <code>{MAX_HISTORY_PAIRS}</code>\n"
         f"rate_limit: <code>{RATE_LIMIT_COUNT} requests / {RATE_LIMIT_WINDOW_SECONDS}s</code>\n"
         "streaming: <code>enabled</code>\n\n"
-        "Use <code>/model &lt;model_id&gt;</code> to switch directly, or tap the button below."
+        "Use <code>/model &lt;model_id&gt;</code> to switch the global model, or tap the button below."
     )
 
 
@@ -258,17 +404,18 @@ def build_model_settings_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def build_models_menu_text(user_id: int, ids: list[str], page: int) -> str:
-    current_model = html.escape(get_active_model(user_id))
+def build_models_menu_text(ids: list[str], page: int) -> str:
+    runtime_config = get_runtime_config()
+    current_model = html.escape(runtime_config.openai_model)
     source_label = html.escape(get_models_source_label())
-    key_label = html.escape(mask_secret(OPENAI_API_KEY))
+    key_label = html.escape(mask_secret(runtime_config.openai_api_key))
     page_count = max(1, (len(ids) + MODELS_MENU_PAGE_SIZE - 1) // MODELS_MENU_PAGE_SIZE)
     page = max(0, min(page, page_count - 1))
     page_label = f"\nPage {page + 1}/{page_count}" if page_count > 1 else ""
     return (
         f"<b>Models</b> ({source_label} | key {key_label}) - {len(ids)} available\n"
-        f"Current: <code>{current_model}</code>{page_label}\n"
-        "Tap a model below to switch."
+        f"Current global model: <code>{current_model}</code>{page_label}\n"
+        "Tap a model below to switch and save it to config.json."
     )
 
 
@@ -465,8 +612,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Hi, I am ready. Send me any message and I will stream an LLM reply.\n"
         "Commands:\n"
         "/new - start a new session\n"
-        "/model - show current model settings\n"
-        "/model <model_id> - switch to a specific model\n"
+        "/model - show current global model settings\n"
+        "/model <model_id> - switch the global model\n"
         "/models - open the model button menu\n"
         "/reset - clear your conversation history"
     )
@@ -498,12 +645,11 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not authorized(update.effective_user.id):
         await update.message.reply_text("Access denied for this bot.")
         return
-    user_id = update.effective_user.id
 
     requested_model = " ".join(context.args).strip()
     if not requested_model:
         await update.message.reply_text(
-            build_model_settings_text(user_id),
+            build_model_settings_text(),
             parse_mode=ParseMode.HTML,
             reply_markup=build_model_settings_keyboard(),
         )
@@ -520,10 +666,24 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     available_set = set(available_ids)
     if requested_model in available_set:
-        selected_models[user_id] = requested_model
+        current_model = get_active_model()
+        if requested_model == current_model:
+            await update.message.reply_text(
+                f"Global model is already set to {requested_model}."
+            )
+            return
+        try:
+            runtime_config_store.update_model(requested_model)
+        except Exception:
+            logging.exception("Failed to persist runtime config for /model")
+            await update.message.reply_text(
+                f"Failed to save the selected model to {CONFIG_PATH}. Please try again."
+            )
+            return
         await update.message.reply_text(
-            f"Model set to {requested_model}.\n"
-            f"(default in config is: {OPENAI_MODEL})"
+            f"Global model set to {requested_model}.\n"
+            f"Saved to {CONFIG_PATH}.\n"
+            f"(default model in .env is: {DEFAULT_LLM_CONFIG.openai_model})"
         )
         return
 
@@ -557,9 +717,9 @@ async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         context.user_data["models_menu_ids"] = ids
         await update.message.reply_text(
-            build_models_menu_text(update.effective_user.id, ids, 0),
+            build_models_menu_text(ids, 0),
             parse_mode=ParseMode.HTML,
-            reply_markup=build_models_keyboard(ids, get_active_model(update.effective_user.id), 0),
+            reply_markup=build_models_keyboard(ids, get_active_model(), 0),
         )
     except Exception:
         logging.exception("Failed to list models")
@@ -576,7 +736,6 @@ async def models_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer("Access denied for this bot.", show_alert=True)
         return
 
-    user_id = update.effective_user.id
     data = query.data or ""
     parts = data.split(":")
     action = parts[1] if len(parts) > 1 else ""
@@ -586,7 +745,7 @@ async def models_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer()
             await edit_callback_text(
                 update,
-                build_model_settings_text(user_id),
+                build_model_settings_text(),
                 build_model_settings_keyboard(),
             )
             return
@@ -601,8 +760,8 @@ async def models_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer()
             await edit_callback_text(
                 update,
-                build_models_menu_text(user_id, ids, page),
-                build_models_keyboard(ids, get_active_model(user_id), page),
+                build_models_menu_text(ids, page),
+                build_models_keyboard(ids, get_active_model(), page),
             )
             return
 
@@ -618,8 +777,8 @@ async def models_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer()
             await edit_callback_text(
                 update,
-                build_models_menu_text(user_id, ids, page),
-                build_models_keyboard(ids, get_active_model(user_id), page),
+                build_models_menu_text(ids, page),
+                build_models_keyboard(ids, get_active_model(), page),
             )
             return
 
@@ -638,22 +797,26 @@ async def models_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 return
 
             model_id = ids[index]
-            current_model = get_active_model(user_id)
-            selected_models[user_id] = model_id
+            current_model = get_active_model()
             page = index // MODELS_MENU_PAGE_SIZE
+
+            if model_id != current_model:
+                runtime_config_store.update_model(model_id)
 
             await edit_callback_text(
                 update,
-                build_models_menu_text(user_id, ids, page),
+                build_models_menu_text(ids, page),
                 build_models_keyboard(ids, model_id, page),
             )
 
             if model_id == current_model:
-                await query.answer("Already using this model.")
+                await query.answer("Already using this global model.")
             else:
-                await query.answer("Model updated.")
+                await query.answer("Global model updated.")
                 if query.message:
-                    await query.message.reply_text(f"Model set to {model_id}.")
+                    await query.message.reply_text(
+                        f"Global model set to {model_id}.\nSaved to {CONFIG_PATH}."
+                    )
             return
 
         await query.answer()
@@ -677,11 +840,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "Commands:\n"
         "/new - start a new session\n"
-        "/model - show current model settings\n"
-        "/model <model_id> - switch to a specific model\n"
+        "/model - show current global model settings\n"
+        "/model <model_id> - switch the global model\n"
         "/models - open the model button menu\n"
         "/reset - clear your conversation history\n\n"
-        "Set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY in .env, then chat directly.\n"
+        "Set TELEGRAM_BOT_TOKEN and the default OpenAI values in .env.\n"
+        f"Runtime LLM config is persisted in {CONFIG_PATH}.\n"
         "Optional envs: OPENAI_MODEL, OPENAI_BASE_URL, MAX_HISTORY_PAIRS, "
         "SYSTEM_PROMPT, SQLITE_PATH, WHITELIST_USER_IDS, RATE_LIMIT_COUNT, "
         "RATE_LIMIT_WINDOW_SECONDS, MODELS_MENU_PAGE_SIZE"
@@ -698,7 +862,7 @@ async def stream_llm_answer(
     full_text = ""
     last_sent_text = ""
     last_edit_at = 0.0
-    active_model = selected_models.get(user_id, OPENAI_MODEL)
+    active_model = get_active_model()
 
     stream = await llm_client.chat.completions.create(
         model=active_model,

@@ -6,4 +6,4 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      - ./data:/app/data # stores SQLite data and runtime config.json
