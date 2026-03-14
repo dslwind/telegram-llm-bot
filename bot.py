@@ -35,6 +35,8 @@ DEFAULT_PROVIDER_ID = "default"
 DEFAULT_PROVIDER_NAME = "Default"
 MODELS_MENU_CACHE_KEY = "models_menu"
 PROVIDER_WIZARD_KEY = "provider_wizard"
+THINK_OPEN_TAG = "<think>"
+THINK_CLOSE_TAG = "</think>"
 
 
 def require_env(name: str) -> str:
@@ -91,6 +93,94 @@ def normalize_required_text(value: object, field_name: str) -> str:
     if normalized is None:
         raise RuntimeError(f"Missing required config field: {field_name}")
     return normalized
+
+
+def strip_think_tags(text: str) -> str:
+    if not text:
+        return text
+    stripped = re.sub(
+        r"(?is)<think>.*?(?:</think>|$)",
+        "",
+        text,
+    )
+    stripped = re.sub(r"(?is)</think>", "", stripped)
+    return stripped
+
+
+def _partial_tag_suffix_length(text: str, patterns: tuple[str, ...]) -> int:
+    lower_text = text.lower()
+    best = 0
+    for pattern in patterns:
+        limit = min(len(lower_text), len(pattern) - 1)
+        for size in range(limit, 0, -1):
+            if lower_text[-size:] == pattern[:size]:
+                best = max(best, size)
+                break
+    return best
+
+
+class ThinkTagFilter:
+    def __init__(self) -> None:
+        self._pending = ""
+        self._inside_think = False
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        self._pending += chunk
+        return self._drain(final=False)
+
+    def finish(self) -> str:
+        return self._drain(final=True)
+
+    def _drain(self, final: bool) -> str:
+        output: list[str] = []
+        while self._pending:
+            lower_pending = self._pending.lower()
+            if self._inside_think:
+                close_index = lower_pending.find(THINK_CLOSE_TAG)
+                if close_index == -1:
+                    if final:
+                        self._pending = ""
+                    else:
+                        keep = min(len(self._pending), len(THINK_CLOSE_TAG) - 1)
+                        self._pending = self._pending[-keep:] if keep else ""
+                    break
+                self._pending = self._pending[close_index + len(THINK_CLOSE_TAG):]
+                self._inside_think = False
+                continue
+
+            open_index = lower_pending.find(THINK_OPEN_TAG)
+            close_index = lower_pending.find(THINK_CLOSE_TAG)
+
+            if close_index != -1 and (open_index == -1 or close_index < open_index):
+                if close_index > 0:
+                    output.append(self._pending[:close_index])
+                self._pending = self._pending[close_index + len(THINK_CLOSE_TAG):]
+                continue
+
+            if open_index != -1:
+                if open_index > 0:
+                    output.append(self._pending[:open_index])
+                self._pending = self._pending[open_index + len(THINK_OPEN_TAG):]
+                self._inside_think = True
+                continue
+
+            if final:
+                output.append(self._pending)
+                self._pending = ""
+            else:
+                keep = _partial_tag_suffix_length(
+                    self._pending,
+                    (THINK_OPEN_TAG, THINK_CLOSE_TAG),
+                )
+                emit_end = len(self._pending) - keep
+                if emit_end > 0:
+                    output.append(self._pending[:emit_end])
+                    self._pending = self._pending[emit_end:]
+                break
+
+        return "".join(output)
 
 
 def mask_secret(value: str, prefix: int = 6, suffix: int = 4) -> str:
@@ -1697,17 +1787,32 @@ async def stream_llm_answer(
     out_message: Message,
 ) -> str:
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    history_messages = await asyncio.to_thread(
+        chat_store.get_recent_messages,
+        user_id,
+        MAX_HISTORY_MESSAGES,
+    )
     messages.extend(
-        await asyncio.to_thread(chat_store.get_recent_messages, user_id, MAX_HISTORY_MESSAGES)
+        {
+            "role": item["role"],
+            "content": (
+                strip_think_tags(item["content"])
+                if item["role"] == "assistant"
+                else item["content"]
+            ),
+        }
+        for item in history_messages
     )
     messages.append({"role": "user", "content": user_content})
 
     provider = get_current_provider()
     client = build_openai_client(provider)
     active_model = provider.current_model
-    full_text = ""
+    raw_text = ""
+    visible_text = ""
     last_sent_text = ""
     last_edit_at = 0.0
+    think_filter = ThinkTagFilter()
 
     stream = await client.chat.completions.create(
         model=active_model,
@@ -1724,16 +1829,17 @@ async def stream_llm_answer(
         if not token:
             continue
 
-        full_text += token
+        raw_text += token
+        visible_text += think_filter.feed(token)
         now = time.monotonic()
-        changed_chars = len(full_text) - len(last_sent_text)
+        changed_chars = len(visible_text) - len(last_sent_text)
         should_edit = (
             changed_chars >= STREAM_MIN_CHARS_DELTA
             and now - last_edit_at >= STREAM_EDIT_INTERVAL_SECONDS
         )
 
         if should_edit:
-            preview = truncate_for_telegram(full_text)
+            preview = truncate_for_telegram(visible_text)
             if preview != last_sent_text:
                 try:
                     await out_message.edit_text(preview)
@@ -1744,7 +1850,11 @@ async def stream_llm_answer(
                     pass
                 last_edit_at = now
 
-    answer = full_text.strip() or "I could not generate a response. Please try again."
+    visible_text += think_filter.finish()
+    answer = strip_think_tags(raw_text).strip()
+    if not answer:
+        answer = visible_text.strip()
+    answer = answer or "I could not generate a response. Please try again."
     await finalize_reply(out_message, answer)
     return answer
 
