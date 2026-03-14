@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest, RetryAfter
 from telegram.ext import (
@@ -938,6 +938,30 @@ def build_models_keyboard(provider_id: str, ids: list[str], current_model: str, 
 
     rows.append([InlineKeyboardButton("<< Providers", callback_data="models:backproviders")])
     return InlineKeyboardMarkup(rows)
+
+
+def get_bot_commands() -> list[BotCommand]:
+    return [
+        BotCommand("start", "Show bot status and command overview"),
+        BotCommand("new", "Start a new chat session"),
+        BotCommand("model", "Show or switch the current provider model"),
+        BotCommand("models", "Choose a provider and then a model"),
+        BotCommand("providers", "Show and switch configured providers"),
+        BotCommand("provider_add", "Create a new provider"),
+        BotCommand("provider_edit", "Edit a provider by id"),
+        BotCommand("provider_delete", "Delete a provider by id"),
+        BotCommand("provider_cancel", "Cancel provider setup"),
+        BotCommand("reset", "Clear your conversation history"),
+        BotCommand("help", "Show command help"),
+    ]
+
+
+async def sync_bot_commands(application: Application) -> None:
+    try:
+        await application.bot.set_my_commands(get_bot_commands())
+        logging.info("Telegram bot commands synced successfully")
+    except Exception:
+        logging.exception("Failed to sync Telegram bot commands on startup")
 
 
 async def edit_callback_text(
@@ -1961,7 +1985,7 @@ def main() -> None:
     logging.info("SQLite chat storage path: %s", os.path.abspath(SQLITE_PATH))
     logging.info("Runtime config path: %s", os.path.abspath(CONFIG_PATH))
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(sync_bot_commands).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler(["new", "newchat"], new_session_command))
     app.add_handler(CommandHandler("model", model_command))

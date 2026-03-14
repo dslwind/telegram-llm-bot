@@ -11,6 +11,7 @@ A Telegram bot that forwards user messages to an LLM and streams replies back.
 - `/models` command to choose a provider and then a model
 - `/providers` command to show and switch configured providers
 - Telegram-based provider add/edit/delete management
+- Telegram command menu is synced automatically on bot startup
 - `/reset` command to clear user history from SQLite
 - User whitelist (optional)
 - Per-user rate limiting for normal chat requests
