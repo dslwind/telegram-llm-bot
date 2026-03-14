@@ -8,13 +8,21 @@ import sqlite3
 import threading
 import time
 from collections import defaultdict, deque
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
-from telegram import Message, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest, RetryAfter
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 load_dotenv()
 
@@ -170,6 +178,7 @@ RATE_LIMIT_COUNT = get_int_env("RATE_LIMIT_COUNT", 20)
 RATE_LIMIT_WINDOW_SECONDS = get_int_env("RATE_LIMIT_WINDOW_SECONDS", 60)
 STREAM_EDIT_INTERVAL_SECONDS = get_float_env("STREAM_EDIT_INTERVAL_SECONDS", 0.8, 0.1)
 STREAM_MIN_CHARS_DELTA = get_int_env("STREAM_MIN_CHARS_DELTA", 24)
+MODELS_MENU_PAGE_SIZE = get_int_env("MODELS_MENU_PAGE_SIZE", 8)
 
 client_kwargs = {"api_key": OPENAI_API_KEY}
 if OPENAI_BASE_URL:
@@ -182,6 +191,146 @@ selected_models: dict[int, str] = {}
 
 def authorized(user_id: int) -> bool:
     return not WHITELIST_USER_IDS or user_id in WHITELIST_USER_IDS
+
+
+def get_active_model(user_id: int) -> str:
+    return selected_models.get(user_id, OPENAI_MODEL)
+
+
+def mask_secret(value: str, prefix: int = 6, suffix: int = 4) -> str:
+    if not value:
+        return "(missing)"
+    if len(value) <= prefix + suffix:
+        return value
+    return f"{value[:prefix]}...{value[-suffix:]}"
+
+
+def get_models_source_label() -> str:
+    if not OPENAI_BASE_URL:
+        return "api.openai.com/v1"
+    parsed = urlparse(OPENAI_BASE_URL)
+    host = parsed.netloc or OPENAI_BASE_URL
+    path = parsed.path.rstrip("/")
+    if path and path != "/":
+        return f"{host}{path}"
+    return host
+
+
+async def fetch_available_model_ids() -> list[str]:
+    models = await llm_client.models.list()
+    items = getattr(models, "data", None)
+    if items is None:
+        try:
+            items = list(models)
+        except TypeError:
+            items = []
+
+    ids: list[str] = []
+    for item in items:
+        model_id = getattr(item, "id", None)
+        if model_id is None and isinstance(item, dict):
+            model_id = item.get("id")
+        if isinstance(model_id, str) and model_id:
+            ids.append(model_id)
+
+    return sorted(set(ids))
+
+
+def build_model_settings_text(user_id: int) -> str:
+    current_model = html.escape(get_active_model(user_id))
+    default_model = html.escape(OPENAI_MODEL)
+    base_url = html.escape(OPENAI_BASE_URL or "https://api.openai.com/v1 (default)")
+    return (
+        "<b>Current model settings</b>\n"
+        f"current_model: <code>{current_model}</code>\n"
+        f"default_model: <code>{default_model}</code>\n"
+        f"base_url: <code>{base_url}</code>\n"
+        f"max_history_pairs: <code>{MAX_HISTORY_PAIRS}</code>\n"
+        f"rate_limit: <code>{RATE_LIMIT_COUNT} requests / {RATE_LIMIT_WINDOW_SECONDS}s</code>\n"
+        "streaming: <code>enabled</code>\n\n"
+        "Use <code>/model &lt;model_id&gt;</code> to switch directly, or tap the button below."
+    )
+
+
+def build_model_settings_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Open model list", callback_data="models:open:0")]
+    ])
+
+
+def build_models_menu_text(user_id: int, ids: list[str], page: int) -> str:
+    current_model = html.escape(get_active_model(user_id))
+    source_label = html.escape(get_models_source_label())
+    key_label = html.escape(mask_secret(OPENAI_API_KEY))
+    page_count = max(1, (len(ids) + MODELS_MENU_PAGE_SIZE - 1) // MODELS_MENU_PAGE_SIZE)
+    page = max(0, min(page, page_count - 1))
+    page_label = f"\nPage {page + 1}/{page_count}" if page_count > 1 else ""
+    return (
+        f"<b>Models</b> ({source_label} | key {key_label}) - {len(ids)} available\n"
+        f"Current: <code>{current_model}</code>{page_label}\n"
+        "Tap a model below to switch."
+    )
+
+
+def build_models_keyboard(ids: list[str], current_model: str, page: int) -> InlineKeyboardMarkup:
+    page_count = max(1, (len(ids) + MODELS_MENU_PAGE_SIZE - 1) // MODELS_MENU_PAGE_SIZE)
+    page = max(0, min(page, page_count - 1))
+    start = page * MODELS_MENU_PAGE_SIZE
+    end = min(start + MODELS_MENU_PAGE_SIZE, len(ids))
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for index in range(start, end):
+        model_id = ids[index]
+        label = f"{model_id} [current]" if model_id == current_model else model_id
+        rows.append([InlineKeyboardButton(label, callback_data=f"models:set:{index}")])
+
+    navigation: list[InlineKeyboardButton] = []
+    if page > 0:
+        navigation.append(
+            InlineKeyboardButton("< Prev", callback_data=f"models:page:{page - 1}")
+        )
+    if page + 1 < page_count:
+        navigation.append(
+            InlineKeyboardButton("Next >", callback_data=f"models:page:{page + 1}")
+        )
+    if navigation:
+        rows.append(navigation)
+
+    rows.append([InlineKeyboardButton("<< Back", callback_data="models:back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def get_cached_model_ids(context: ContextTypes.DEFAULT_TYPE) -> list[str] | None:
+    cached_ids = context.user_data.get("models_menu_ids")
+    if isinstance(cached_ids, list) and all(isinstance(item, str) for item in cached_ids):
+        return cached_ids
+    return None
+
+
+async def edit_callback_text(
+    update: Update,
+    text: str,
+    reply_markup: InlineKeyboardMarkup,
+) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    try:
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
+    except RetryAfter as e:
+        await asyncio.sleep(e.retry_after)
+        await query.edit_message_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
+    except BadRequest as exc:
+        if "Message is not modified" not in str(exc):
+            raise
 
 
 def truncate_for_telegram(text: str) -> str:
@@ -318,7 +467,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/new - start a new session\n"
         "/model - show current model settings\n"
         "/model <model_id> - switch to a specific model\n"
-        "/models - list available models from API\n"
+        "/models - open the model button menu\n"
         "/reset - clear your conversation history"
     )
 
@@ -350,33 +499,18 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("Access denied for this bot.")
         return
     user_id = update.effective_user.id
-    base_url = OPENAI_BASE_URL or "https://api.openai.com/v1 (default)"
-    current_model = selected_models.get(user_id, OPENAI_MODEL)
 
     requested_model = " ".join(context.args).strip()
     if not requested_model:
         await update.message.reply_text(
-            "Current model settings:\n"
-            f"- current_model: {current_model}\n"
-            f"- default_model: {OPENAI_MODEL}\n"
-            f"- base_url: {base_url}\n"
-            f"- max_history_pairs: {MAX_HISTORY_PAIRS}\n"
-            f"- rate_limit: {RATE_LIMIT_COUNT} requests / {RATE_LIMIT_WINDOW_SECONDS}s\n"
-            "- streaming: enabled\n\n"
-            "Usage:\n"
-            "- /model : show current model\n"
-            "- /model <model_id> : switch model"
+            build_model_settings_text(user_id),
+            parse_mode=ParseMode.HTML,
+            reply_markup=build_model_settings_keyboard(),
         )
         return
 
     try:
-        models = await llm_client.models.list()
-        items = getattr(models, "data", None)
-        if items is None:
-            try:
-                items = list(models)
-            except TypeError:
-                items = []
+        available_ids = await fetch_available_model_ids()
     except Exception:
         logging.exception("Failed to fetch model list for /model")
         await update.message.reply_text(
@@ -384,19 +518,11 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    available_ids: list[str] = []
-    for item in items:
-        model_id = getattr(item, "id", None)
-        if model_id is None and isinstance(item, dict):
-            model_id = item.get("id")
-        if isinstance(model_id, str) and model_id:
-            available_ids.append(model_id)
-
     available_set = set(available_ids)
     if requested_model in available_set:
         selected_models[user_id] = requested_model
         await update.message.reply_text(
-            f"Model switched to: {requested_model}\n"
+            f"Model set to {requested_model}.\n"
             f"(default in config is: {OPENAI_MODEL})"
         )
         return
@@ -412,7 +538,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     await update.message.reply_text(
-        "Invalid model ID. Use /models to list valid model IDs, then run /model <model_id>."
+        "Invalid model ID. Use /models to open the model menu, or run /model <model_id> with a valid full ID."
     )
 
 
@@ -424,80 +550,122 @@ async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     try:
-        models = await llm_client.models.list()
-        items = getattr(models, "data", None)
-        if items is None:
-            try:
-                items = list(models)
-            except TypeError:
-                items = []
-
-        ids: list[str] = []
-        for item in items:
-            model_id = getattr(item, "id", None)
-            if model_id is None and isinstance(item, dict):
-                model_id = item.get("id")
-            if isinstance(model_id, str) and model_id:
-                ids.append(model_id)
-
-        ids = sorted(set(ids))
+        ids = await fetch_available_model_ids()
         if not ids:
             await update.message.reply_text("No models returned by API.")
             return
 
-        formatted_pairs = [
-            (f"<code>{html.escape(model_id)}</code>", model_id) for model_id in ids
-        ]
-        prefix = "Available models:\n"
-        combined = prefix + "\n".join(html_line for html_line, _ in formatted_pairs)
-
-        async def send_html_or_plain(html_content: str, plain_content: str) -> None:
-            try:
-                await update.message.reply_text(html_content, parse_mode=ParseMode.HTML)
-            except RetryAfter as e:
-                await asyncio.sleep(e.retry_after)
-                await update.message.reply_text(html_content, parse_mode=ParseMode.HTML)
-            except BadRequest:
-                await update.message.reply_text(plain_content)
-
-        if len(combined) <= TELEGRAM_TEXT_LIMIT:
-            plain = "Available models:\n" + "\n".join(ids)
-            await send_html_or_plain(combined, plain)
-            return
-
-        chunk_limit = TELEGRAM_TEXT_LIMIT - len(prefix)
-        html_chunks: list[str] = []
-        plain_chunks: list[str] = []
-        current_html: list[str] = []
-        current_plain: list[str] = []
-        current_len = 0
-
-        for html_line, plain_line in formatted_pairs:
-            added = len(html_line) if not current_html else len(html_line) + 1
-            if current_html and current_len + added > chunk_limit:
-                html_chunks.append("\n".join(current_html))
-                plain_chunks.append("\n".join(current_plain))
-                current_html = [html_line]
-                current_plain = [plain_line]
-                current_len = len(html_line)
-            else:
-                current_html.append(html_line)
-                current_plain.append(plain_line)
-                current_len += added
-
-        if current_html:
-            html_chunks.append("\n".join(current_html))
-            plain_chunks.append("\n".join(current_plain))
-
-        for index, html_chunk in enumerate(html_chunks):
-            html_message = (prefix + html_chunk) if index == 0 else html_chunk
-            plain_message = (prefix + plain_chunks[index]) if index == 0 else plain_chunks[index]
-            await send_html_or_plain(html_message, plain_message)
+        context.user_data["models_menu_ids"] = ids
+        await update.message.reply_text(
+            build_models_menu_text(update.effective_user.id, ids, 0),
+            parse_mode=ParseMode.HTML,
+            reply_markup=build_models_keyboard(ids, get_active_model(update.effective_user.id), 0),
+        )
     except Exception:
         logging.exception("Failed to list models")
         await update.message.reply_text(
             "Failed to fetch model list. Check API key/base URL and try again."
         )
+
+
+async def models_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await query.answer("Access denied for this bot.", show_alert=True)
+        return
+
+    user_id = update.effective_user.id
+    data = query.data or ""
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else ""
+
+    try:
+        if action == "back":
+            await query.answer()
+            await edit_callback_text(
+                update,
+                build_model_settings_text(user_id),
+                build_model_settings_keyboard(),
+            )
+            return
+
+        if action == "open":
+            page = int(parts[2]) if len(parts) > 2 else 0
+            ids = await fetch_available_model_ids()
+            if not ids:
+                await query.answer("No models returned by API.", show_alert=True)
+                return
+            context.user_data["models_menu_ids"] = ids
+            await query.answer()
+            await edit_callback_text(
+                update,
+                build_models_menu_text(user_id, ids, page),
+                build_models_keyboard(ids, get_active_model(user_id), page),
+            )
+            return
+
+        if action == "page":
+            page = int(parts[2]) if len(parts) > 2 else 0
+            ids = get_cached_model_ids(context)
+            if ids is None:
+                ids = await fetch_available_model_ids()
+                context.user_data["models_menu_ids"] = ids
+            if not ids:
+                await query.answer("No models returned by API.", show_alert=True)
+                return
+            await query.answer()
+            await edit_callback_text(
+                update,
+                build_models_menu_text(user_id, ids, page),
+                build_models_keyboard(ids, get_active_model(user_id), page),
+            )
+            return
+
+        if action == "set":
+            ids = get_cached_model_ids(context)
+            if ids is None:
+                ids = await fetch_available_model_ids()
+                context.user_data["models_menu_ids"] = ids
+            if not ids:
+                await query.answer("No models returned by API.", show_alert=True)
+                return
+
+            index = int(parts[2]) if len(parts) > 2 else -1
+            if not 0 <= index < len(ids):
+                await query.answer("Model list expired. Please reopen /models.", show_alert=True)
+                return
+
+            model_id = ids[index]
+            current_model = get_active_model(user_id)
+            selected_models[user_id] = model_id
+            page = index // MODELS_MENU_PAGE_SIZE
+
+            await edit_callback_text(
+                update,
+                build_models_menu_text(user_id, ids, page),
+                build_models_keyboard(ids, model_id, page),
+            )
+
+            if model_id == current_model:
+                await query.answer("Already using this model.")
+            else:
+                await query.answer("Model updated.")
+                if query.message:
+                    await query.message.reply_text(f"Model set to {model_id}.")
+            return
+
+        await query.answer()
+    except Exception:
+        logging.exception("Failed to handle models menu callback")
+        try:
+            await query.answer(
+                "Failed to update model menu. Please try /models again.",
+                show_alert=True,
+            )
+        except BadRequest:
+            pass
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -511,12 +679,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/new - start a new session\n"
         "/model - show current model settings\n"
         "/model <model_id> - switch to a specific model\n"
-        "/models - list available models from API\n"
+        "/models - open the model button menu\n"
         "/reset - clear your conversation history\n\n"
         "Set TELEGRAM_BOT_TOKEN and OPENAI_API_KEY in .env, then chat directly.\n"
         "Optional envs: OPENAI_MODEL, OPENAI_BASE_URL, MAX_HISTORY_PAIRS, "
         "SYSTEM_PROMPT, SQLITE_PATH, WHITELIST_USER_IDS, RATE_LIMIT_COUNT, "
-        "RATE_LIMIT_WINDOW_SECONDS"
+        "RATE_LIMIT_WINDOW_SECONDS, MODELS_MENU_PAGE_SIZE"
     )
 
 
@@ -666,6 +834,7 @@ def main() -> None:
     app.add_handler(CommandHandler(["new", "newchat"], new_session_command))
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("models", models_command))
+    app.add_handler(CallbackQueryHandler(models_menu_callback, pattern=r"^models:"))
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
