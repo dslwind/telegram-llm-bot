@@ -73,6 +73,19 @@ def strip_think_tags(text: str) -> str:
     return stripped
 
 
+def extract_think_sections(text: str) -> tuple[str, str]:
+    if not text:
+        return "", text
+    sections = [
+        match.strip()
+        for match in re.findall(r"(?is)<think>(.*?)(?:</think>|$)", text)
+        if match.strip()
+    ]
+    reasoning = "\n\n".join(sections)
+    answer = strip_think_tags(text).strip()
+    return reasoning, answer
+
+
 def _partial_tag_suffix_length(text: str, patterns: tuple[str, ...]) -> int:
     lower_text = text.lower()
     best = 0

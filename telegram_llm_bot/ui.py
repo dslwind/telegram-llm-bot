@@ -7,7 +7,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest, RetryAfter
 from telegram.ext import Application, ContextTypes
 
-from .constants import CONFIG_PATH
+from .constants import CONFIG_PATH, TELEGRAM_TEXT_LIMIT
 from .runtime import (
     BOOTSTRAP_PROVIDER,
     MAX_HISTORY_PAIRS,
@@ -19,6 +19,7 @@ from .runtime import (
 )
 from .storage import ProviderConfig
 from .utils import (
+    extract_think_sections,
     format_base_url,
     markdown_to_telegram_html,
     mask_secret,
@@ -230,8 +231,42 @@ async def edit_callback_text(
             raise
 
 
-async def finalize_reply(message: Message, text: str) -> None:
-    chunks = [markdown_to_telegram_html(chunk) for chunk in split_text_for_telegram(text)]
+def _build_reasoning_chunk(text: str) -> str:
+    escaped = html.escape(text)
+    return f"<blockquote expandable><b>Reasoning</b>\n{escaped}</blockquote>"
+
+
+def build_reply_html_chunks(text: str, raw_text: str | None = None) -> list[str]:
+    answer_text = text
+    reasoning_text = ""
+
+    if raw_text:
+        reasoning_text, extracted_answer = extract_think_sections(raw_text)
+        if extracted_answer:
+            answer_text = extracted_answer
+
+    answer_chunks = [markdown_to_telegram_html(chunk) for chunk in split_text_for_telegram(answer_text)]
+    reasoning_chunks = (
+        [_build_reasoning_chunk(chunk) for chunk in split_text_for_telegram(reasoning_text)]
+        if reasoning_text
+        else []
+    )
+
+    if not reasoning_chunks:
+        return answer_chunks
+
+    if not answer_chunks:
+        return reasoning_chunks
+
+    combined_first = f"{reasoning_chunks[0]}\n\n{answer_chunks[0]}"
+    if len(combined_first) <= TELEGRAM_TEXT_LIMIT:
+        return [combined_first, *answer_chunks[1:], *reasoning_chunks[1:]]
+
+    return [answer_chunks[0], *answer_chunks[1:], *reasoning_chunks]
+
+
+async def finalize_reply(message: Message, text: str, raw_text: str | None = None) -> None:
+    chunks = build_reply_html_chunks(text, raw_text=raw_text)
 
     async def _edit_with_markup_fallback(content: str) -> None:
         try:

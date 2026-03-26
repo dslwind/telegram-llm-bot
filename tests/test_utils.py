@@ -2,6 +2,7 @@ import unittest
 
 from telegram_llm_bot.utils import (
     ThinkTagFilter,
+    extract_think_sections,
     markdown_to_telegram_html,
     slugify_provider_id,
     split_text_for_telegram,
@@ -33,6 +34,13 @@ class UtilsTests(unittest.TestCase):
     def test_strip_think_tags_removes_inline_content(self) -> None:
         text = "before<think>ignore this</think>after"
         self.assertEqual(strip_think_tags(text), "beforeafter")
+
+    def test_extract_think_sections_returns_reasoning_and_answer(self) -> None:
+        reasoning, answer = extract_think_sections(
+            "before<think>step 1\nstep 2</think>after"
+        )
+        self.assertEqual(reasoning, "step 1\nstep 2")
+        self.assertEqual(answer, "beforeafter")
 
     def test_markdown_to_telegram_html_keeps_basic_formatting(self) -> None:
         rendered = markdown_to_telegram_html(

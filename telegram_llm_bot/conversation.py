@@ -151,12 +151,14 @@ async def _stream_llm_answer_via_responses(
         raw_text, visible_text = await _stream_response_events(out_message, response_stream)
         final_response = await response_stream.get_final_response()
 
-    answer = strip_think_tags(final_response.output_text or raw_text).strip()
+    model_text = final_response.output_text or raw_text
+    answer = strip_think_tags(model_text).strip()
     if not answer:
         answer = visible_text.strip()
     answer = answer or "I could not generate a response. Please try again."
-    await finalize_reply(out_message, answer)
-    return answer
+    await finalize_reply(out_message, answer, raw_text=model_text)
+    stored_text = model_text.strip() or answer
+    return stored_text
 
 
 async def _stream_llm_answer_via_chat_completions(
@@ -228,8 +230,9 @@ async def _stream_llm_answer_via_chat_completions(
     if not answer:
         answer = visible_text.strip()
     answer = answer or "I could not generate a response. Please try again."
-    await finalize_reply(out_message, answer)
-    return answer
+    await finalize_reply(out_message, answer, raw_text=raw_text)
+    stored_text = raw_text.strip() or answer
+    return stored_text
 
 
 async def stream_llm_answer(
