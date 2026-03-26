@@ -1,0 +1,58 @@
+import unittest
+
+from telegram_llm_bot.utils import (
+    ThinkTagFilter,
+    markdown_to_telegram_html,
+    slugify_provider_id,
+    split_text_for_telegram,
+    strip_think_tags,
+)
+
+
+class ThinkTagFilterTests(unittest.TestCase):
+    def test_filter_removes_streamed_think_sections_across_chunks(self) -> None:
+        filter_ = ThinkTagFilter()
+        pieces = [
+            filter_.feed("hello<th"),
+            filter_.feed("ink>secret"),
+            filter_.feed("</think> world"),
+            filter_.finish(),
+        ]
+        self.assertEqual("".join(pieces), "hello world")
+
+    def test_filter_drops_unclosed_think_section_on_finish(self) -> None:
+        filter_ = ThinkTagFilter()
+        pieces = [
+            filter_.feed("visible<think>hidden"),
+            filter_.finish(),
+        ]
+        self.assertEqual("".join(pieces), "visible")
+
+
+class UtilsTests(unittest.TestCase):
+    def test_strip_think_tags_removes_inline_content(self) -> None:
+        text = "before<think>ignore this</think>after"
+        self.assertEqual(strip_think_tags(text), "beforeafter")
+
+    def test_markdown_to_telegram_html_keeps_basic_formatting(self) -> None:
+        rendered = markdown_to_telegram_html(
+            "# Title\n**bold** `code` [link](https://example.com)"
+        )
+        self.assertIn("<b>Title</b>", rendered)
+        self.assertIn("<b>bold</b>", rendered)
+        self.assertIn("<code>code</code>", rendered)
+        self.assertIn('<a href="https://example.com">link</a>', rendered)
+
+    def test_split_text_for_telegram_handles_empty_and_long_input(self) -> None:
+        self.assertEqual(split_text_for_telegram(""), ["(empty)"])
+        chunks = split_text_for_telegram("a" * 5000)
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(sum(len(chunk) for chunk in chunks), 5000)
+
+    def test_slugify_provider_id_generates_unique_suffix(self) -> None:
+        provider_id = slugify_provider_id("My Provider", {"my-provider"})
+        self.assertEqual(provider_id, "my-provider-2")
+
+
+if __name__ == "__main__":
+    unittest.main()

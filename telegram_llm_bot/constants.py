@@ -1,0 +1,9 @@
+TELEGRAM_TEXT_LIMIT = 4096
+CONFIG_VERSION = 2
+CONFIG_PATH = "./data/config.json"
+DEFAULT_PROVIDER_ID = "default"
+DEFAULT_PROVIDER_NAME = "Default"
+MODELS_MENU_CACHE_KEY = "models_menu"
+PROVIDER_WIZARD_KEY = "provider_wizard"
+THINK_OPEN_TAG = "<think>"
+THINK_CLOSE_TAG = "</think>"
