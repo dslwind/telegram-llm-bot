@@ -4,6 +4,8 @@ import re
 
 from .constants import TELEGRAM_TEXT_LIMIT, THINK_CLOSE_TAG, THINK_OPEN_TAG
 
+REASONING_EFFORT_VALUES = ("none", "minimal", "low", "medium", "high", "xhigh")
+
 
 def require_env(name: str) -> str:
     value = os.getenv(name)
@@ -52,6 +54,21 @@ def normalize_optional_config_text(value: object) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def normalize_reasoning_effort(value: object) -> str | None:
+    normalized = normalize_optional_config_text(value)
+    if normalized is None:
+        return None
+    lowered = normalized.lower()
+    if lowered in {"default", "auto"}:
+        return None
+    if lowered not in REASONING_EFFORT_VALUES:
+        raise RuntimeError(
+            "Invalid reasoning effort. Expected one of: "
+            + ", ".join(REASONING_EFFORT_VALUES)
+        )
+    return lowered
 
 
 def normalize_required_text(value: object, field_name: str) -> str:
@@ -172,6 +189,10 @@ def mask_secret(value: str, prefix: int = 6, suffix: int = 4) -> str:
 
 def format_base_url(base_url: str | None) -> str:
     return base_url or "https://api.openai.com/v1 (default)"
+
+
+def format_reasoning_effort(reasoning_effort: str | None) -> str:
+    return reasoning_effort or "default"
 
 
 def slugify_provider_id(name: str, existing_ids: set[str]) -> str:

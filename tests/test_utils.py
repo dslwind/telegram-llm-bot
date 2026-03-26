@@ -1,9 +1,12 @@
 import unittest
 
 from telegram_llm_bot.utils import (
+    REASONING_EFFORT_VALUES,
     ThinkTagFilter,
     extract_think_sections,
+    format_reasoning_effort,
     markdown_to_telegram_html,
+    normalize_reasoning_effort,
     slugify_provider_id,
     split_text_for_telegram,
     strip_think_tags,
@@ -41,6 +44,13 @@ class UtilsTests(unittest.TestCase):
         )
         self.assertEqual(reasoning, "step 1\nstep 2")
         self.assertEqual(answer, "beforeafter")
+
+    def test_reasoning_effort_helpers_normalize_and_format(self) -> None:
+        self.assertEqual(normalize_reasoning_effort("HIGH"), "high")
+        self.assertIsNone(normalize_reasoning_effort("default"))
+        self.assertEqual(format_reasoning_effort(None), "default")
+        self.assertEqual(format_reasoning_effort("low"), "low")
+        self.assertIn("xhigh", REASONING_EFFORT_VALUES)
 
     def test_markdown_to_telegram_html_keeps_basic_formatting(self) -> None:
         rendered = markdown_to_telegram_html(

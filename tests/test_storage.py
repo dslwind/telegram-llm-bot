@@ -66,6 +66,7 @@ class RuntimeConfigStoreTests(unittest.TestCase):
             api_key="bootstrap-key",
             default_model="gpt-4.1-mini",
             current_model="gpt-4.1-mini",
+            reasoning_effort="low",
         )
 
     def test_bootstrap_creates_v2_config_file(self) -> None:
@@ -94,6 +95,9 @@ class RuntimeConfigStoreTests(unittest.TestCase):
         updated_provider = store.set_provider_current_model(added.id, "model-b")
         self.assertEqual(updated_provider.current_model, "model-b")
 
+        updated_reasoning = store.set_provider_reasoning_effort(added.id, "high")
+        self.assertEqual(updated_reasoning.reasoning_effort, "high")
+
         edited_provider = store.edit_provider(
             provider_id=added.id,
             name="Backup Provider Edited",
@@ -103,6 +107,7 @@ class RuntimeConfigStoreTests(unittest.TestCase):
         )
         self.assertEqual(edited_provider.name, "Backup Provider Edited")
         self.assertEqual(edited_provider.current_model, "model-c")
+        self.assertEqual(edited_provider.reasoning_effort, "high")
 
         config_after_delete = store.delete_provider(added.id)
         self.assertEqual(config_after_delete.current_provider_id, "default")
@@ -127,6 +132,7 @@ class RuntimeConfigStoreTests(unittest.TestCase):
         self.assertEqual(current.current_provider_id, "default")
         self.assertEqual(current.providers[0].api_key, "legacy-key")
         self.assertEqual(current.providers[0].current_model, "legacy-model")
+        self.assertEqual(current.providers[0].reasoning_effort, "low")
 
 
 if __name__ == "__main__":

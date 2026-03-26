@@ -23,6 +23,7 @@ from .handlers import (
     provider_delete_command,
     provider_edit_command,
     providers_command,
+    reasoning_command,
     reset_command,
     skip_command,
     start_command,
@@ -46,6 +47,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler(["new", "newchat"], new_session_command))
     app.add_handler(CommandHandler("model", model_command))
+    app.add_handler(CommandHandler("reasoning", reasoning_command))
     app.add_handler(CommandHandler("models", models_command))
     app.add_handler(CommandHandler("providers", providers_command))
     app.add_handler(CommandHandler("provider_add", provider_add_command))

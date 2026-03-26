@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 
 from .constants import CONFIG_VERSION, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_NAME
 from .utils import (
+    normalize_reasoning_effort,
     normalize_optional_config_text,
     normalize_required_text,
     slugify_provider_id,
@@ -23,6 +24,7 @@ class ProviderConfig:
     api_key: str
     default_model: str
     current_model: str
+    reasoning_effort: str | None
 
     def as_json(self) -> dict[str, str | None]:
         return {
@@ -32,6 +34,7 @@ class ProviderConfig:
             "api_key": self.api_key,
             "default_model": self.default_model,
             "current_model": self.current_model,
+            "reasoning_effort": self.reasoning_effort,
         }
 
 
@@ -185,6 +188,7 @@ class RuntimeConfigStore:
             api_key=api_key,
             default_model=model,
             current_model=model,
+            reasoning_effort=self._bootstrap_provider.reasoning_effort,
         )
 
     def _provider_from_payload(self, payload: object) -> ProviderConfig:
@@ -205,6 +209,7 @@ class RuntimeConfigStore:
             normalize_optional_config_text(payload.get("current_model")) or default_model
         )
         base_url = normalize_optional_config_text(payload.get("base_url"))
+        reasoning_effort = normalize_reasoning_effort(payload.get("reasoning_effort"))
 
         return ProviderConfig(
             id=provider_id,
@@ -213,6 +218,7 @@ class RuntimeConfigStore:
             api_key=api_key,
             default_model=default_model,
             current_model=current_model,
+            reasoning_effort=reasoning_effort,
         )
 
     def _parse_v2_config(self, raw_payload: dict[str, object]) -> RuntimeConfigV2:
@@ -367,17 +373,44 @@ class RuntimeConfigStore:
             self._config = updated_config
             return updated_provider
 
+    def set_provider_reasoning_effort(
+        self,
+        provider_id: str,
+        reasoning_effort: str | None,
+    ) -> ProviderConfig:
+        normalized_reasoning = normalize_reasoning_effort(reasoning_effort)
+        with self._lock:
+            updated_provider: ProviderConfig | None = None
+            providers: list[ProviderConfig] = []
+            for provider in self._config.providers:
+                if provider.id == provider_id:
+                    updated_provider = replace(
+                        provider,
+                        reasoning_effort=normalized_reasoning,
+                    )
+                    providers.append(updated_provider)
+                else:
+                    providers.append(provider)
+            if updated_provider is None:
+                raise KeyError(provider_id)
+            updated_config = replace(self._config, providers=tuple(providers))
+            self._persist_locked(updated_config)
+            self._config = updated_config
+            return updated_provider
+
     def add_provider(
         self,
         name: str,
         base_url: str | None,
         api_key: str,
         default_model: str,
+        reasoning_effort: str | None = None,
     ) -> ProviderConfig:
         normalized_name = normalize_required_text(name, "provider name")
         normalized_api_key = normalize_required_text(api_key, "provider api_key")
         normalized_model = normalize_required_text(default_model, "provider default_model")
         normalized_base_url = normalize_optional_config_text(base_url)
+        normalized_reasoning = normalize_reasoning_effort(reasoning_effort)
 
         with self._lock:
             existing_ids = {provider.id for provider in self._config.providers}
@@ -389,6 +422,7 @@ class RuntimeConfigStore:
                 api_key=normalized_api_key,
                 default_model=normalized_model,
                 current_model=normalized_model,
+                reasoning_effort=normalized_reasoning,
             )
             updated_config = replace(
                 self._config,
@@ -405,11 +439,16 @@ class RuntimeConfigStore:
         base_url: str | None,
         api_key: str,
         default_model: str,
+        reasoning_effort: str | None | object = None,
     ) -> ProviderConfig:
         normalized_name = normalize_required_text(name, "provider name")
         normalized_api_key = normalize_required_text(api_key, "provider api_key")
         normalized_model = normalize_required_text(default_model, "provider default_model")
         normalized_base_url = normalize_optional_config_text(base_url)
+        preserve_reasoning = reasoning_effort is None
+        normalized_reasoning = (
+            None if preserve_reasoning else normalize_reasoning_effort(reasoning_effort)
+        )
 
         with self._lock:
             updated_provider: ProviderConfig | None = None
@@ -423,6 +462,11 @@ class RuntimeConfigStore:
                         api_key=normalized_api_key,
                         default_model=normalized_model,
                         current_model=normalized_model,
+                        reasoning_effort=(
+                            provider.reasoning_effort
+                            if preserve_reasoning
+                            else normalized_reasoning
+                        ),
                     )
                     providers.append(updated_provider)
                 else:

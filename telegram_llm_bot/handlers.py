@@ -43,6 +43,7 @@ from .ui import (
     build_provider_summary_text,
     edit_callback_text,
 )
+from .utils import REASONING_EFFORT_VALUES, format_reasoning_effort, normalize_reasoning_effort
 
 
 async def render_provider_summary(update: Update) -> None:
@@ -87,6 +88,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/new - start a new session\n"
         "/model - show current provider settings\n"
         "/model <model_id> - switch the current provider model\n"
+        "/reasoning - show current provider reasoning effort\n"
+        "/reasoning <effort> - switch current provider reasoning effort\n"
         "/models - choose a provider and then a model\n"
         "/providers - show provider summary and switching buttons\n"
         "/provider_add - create a provider\n"
@@ -182,6 +185,62 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     await update.message.reply_text(
         "Invalid model ID for the current provider. Use /models to open the provider and model menu."
+    )
+
+
+async def reasoning_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+
+    provider = get_current_provider()
+    requested_effort = " ".join(context.args).strip()
+    if not requested_effort:
+        await update.message.reply_text(
+            f"Provider {provider.name} reasoning effort: "
+            f"<code>{html.escape(format_reasoning_effort(provider.reasoning_effort))}</code>\n"
+            "Use <code>/reasoning default</code> to clear it or one of: "
+            f"<code>{'</code>, <code>'.join(REASONING_EFFORT_VALUES)}</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        normalized_effort = normalize_reasoning_effort(requested_effort)
+    except RuntimeError:
+        await update.message.reply_text(
+            "Invalid reasoning effort.\n"
+            "Use <code>default</code> or one of: "
+            f"<code>{'</code>, <code>'.join(REASONING_EFFORT_VALUES)}</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if normalized_effort == provider.reasoning_effort:
+        await update.message.reply_text(
+            f"Provider {provider.name} is already using "
+            f"{format_reasoning_effort(provider.reasoning_effort)} reasoning."
+        )
+        return
+
+    try:
+        updated_provider = runtime_config_store.set_provider_reasoning_effort(
+            provider.id,
+            normalized_effort,
+        )
+    except Exception:
+        logging.exception("Failed to persist runtime config for /reasoning")
+        await update.message.reply_text(
+            f"Failed to save the selected reasoning effort to {CONFIG_PATH}. Please try again."
+        )
+        return
+
+    await update.message.reply_text(
+        f"Provider {updated_provider.name} reasoning effort set to "
+        f"{format_reasoning_effort(updated_provider.reasoning_effort)}.\n"
+        f"Saved to {CONFIG_PATH}."
     )
 
 
@@ -489,6 +548,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/new - start a new session\n"
         "/model - show current provider settings\n"
         "/model <model_id> - switch the current provider model\n"
+        "/reasoning - show current provider reasoning effort\n"
+        "/reasoning <effort> - switch current provider reasoning effort\n"
         "/models - choose a provider and then a model\n"
         "/providers - show provider summary and switch buttons\n"
         "/provider_add - create a provider\n"

@@ -22,6 +22,8 @@ A Telegram bot that forwards user messages to an LLM and streams replies back.
 - `/new`: clear current user history and start a new session
 - `/model`: show current provider, current model, config path, context, and rate-limit settings
 - `/model <model_id>`: switch the current provider model and persist it to `data/config.json`
+- `/reasoning`: show current provider reasoning effort
+- `/reasoning <effort>`: switch the current provider reasoning effort and persist it to `data/config.json`
 - `/models`: pick a provider first, then pick a model from that provider
 - `/providers`: show provider summary, provider ids, and provider switch buttons
 - `/provider_add`: start the provider creation wizard
@@ -45,6 +47,7 @@ Copy `.env.example` to `.env` and fill in values:
 - `TELEGRAM_BOT_TOKEN`: from BotFather
 - `OPENAI_API_KEY`: bootstrap API key used when creating the initial default provider
 - `OPENAI_MODEL`: bootstrap model used for the initial default provider
+- `OPENAI_REASONING_EFFORT`: optional bootstrap reasoning effort for the initial default provider
 - `OPENAI_BASE_URL`: bootstrap optional OpenAI-compatible endpoint for the initial default provider
 - `SYSTEM_PROMPT`: optional assistant system prompt
 - `MAX_HISTORY_PAIRS`: history message pairs loaded from SQLite context

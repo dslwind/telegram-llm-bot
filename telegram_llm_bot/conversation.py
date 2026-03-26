@@ -141,13 +141,16 @@ async def _stream_llm_answer_via_responses(
     out_message: Message,
 ) -> str:
     client = build_openai_client(provider)
+    stream_kwargs: dict[str, object] = {
+        "model": provider.current_model,
+        "instructions": SYSTEM_PROMPT,
+        "input": _build_responses_input(history_messages, user_content),
+        "timeout": 120,
+    }
+    if provider.reasoning_effort:
+        stream_kwargs["reasoning"] = {"effort": provider.reasoning_effort}
 
-    async with client.responses.stream(
-        model=provider.current_model,
-        instructions=SYSTEM_PROMPT,
-        input=_build_responses_input(history_messages, user_content),
-        timeout=120,
-    ) as response_stream:
+    async with client.responses.stream(**stream_kwargs) as response_stream:
         raw_text, visible_text = await _stream_response_events(out_message, response_stream)
         final_response = await response_stream.get_final_response()
 

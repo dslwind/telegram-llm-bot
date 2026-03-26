@@ -21,6 +21,7 @@ from .storage import ProviderConfig
 from .utils import (
     extract_think_sections,
     format_base_url,
+    format_reasoning_effort,
     markdown_to_telegram_html,
     mask_secret,
     split_text_for_telegram,
@@ -33,6 +34,7 @@ def format_provider_line(provider: ProviderConfig, current_provider_id: str) -> 
         f"- <b>{html.escape(provider.name)}</b> "
         f"<code>{html.escape(provider.id)}</code>{marker}\n"
         f"  model: <code>{html.escape(provider.current_model)}</code>\n"
+        f"  reasoning: <code>{html.escape(format_reasoning_effort(provider.reasoning_effort))}</code>\n"
         f"  base_url: <code>{html.escape(format_base_url(provider.base_url))}</code>\n"
         f"  api_key: <code>{html.escape(mask_secret(provider.api_key))}</code>"
     )
@@ -50,7 +52,9 @@ def build_model_settings_text() -> str:
         f"current_provider: <code>{html.escape(current_provider.name)}</code> "
         f"(<code>{html.escape(current_provider.id)}</code>)\n"
         f"current_model: <code>{html.escape(current_provider.current_model)}</code>\n"
+        f"reasoning_effort: <code>{html.escape(format_reasoning_effort(current_provider.reasoning_effort))}</code>\n"
         f"default_model_from_env: <code>{html.escape(BOOTSTRAP_PROVIDER.default_model)}</code>\n"
+        f"default_reasoning_from_env: <code>{html.escape(format_reasoning_effort(BOOTSTRAP_PROVIDER.reasoning_effort))}</code>\n"
         f"base_url: <code>{html.escape(format_base_url(current_provider.base_url))}</code>\n"
         f"config_path: <code>{html.escape(CONFIG_PATH)}</code>\n"
         f"max_history_pairs: <code>{MAX_HISTORY_PAIRS}</code>\n"
@@ -58,7 +62,7 @@ def build_model_settings_text() -> str:
         "streaming: <code>enabled</code>\n\n"
         "<b>Configured providers</b>\n"
         f"{providers_text}\n\n"
-        "Use <code>/model &lt;model_id&gt;</code> for the current provider, "
+        "Use <code>/model &lt;model_id&gt;</code> and <code>/reasoning &lt;effort&gt;</code> for the current provider, "
         "or tap the buttons below."
     )
 
@@ -84,6 +88,7 @@ def build_provider_summary_text() -> str:
         f"current_provider: <code>{html.escape(current_provider.name)}</code> "
         f"(<code>{html.escape(current_provider.id)}</code>)\n"
         f"current_model: <code>{html.escape(current_provider.current_model)}</code>\n"
+        f"reasoning_effort: <code>{html.escape(format_reasoning_effort(current_provider.reasoning_effort))}</code>\n"
         f"config_path: <code>{html.escape(CONFIG_PATH)}</code>\n\n"
         f"{providers_text}\n\n"
         "<b>Management</b>\n"
@@ -142,6 +147,7 @@ def build_models_menu_text(provider: ProviderConfig, ids: list[str], page: int) 
         f"base_url: <code>{html.escape(format_base_url(provider.base_url))}</code>\n"
         f"api_key: <code>{html.escape(mask_secret(provider.api_key))}</code>\n"
         f"current_model: <code>{html.escape(provider.current_model)}</code>{page_label}\n"
+        f"reasoning_effort: <code>{html.escape(format_reasoning_effort(provider.reasoning_effort))}</code>\n"
         "Tap a model below to switch it for this provider."
     )
 
@@ -186,6 +192,7 @@ def get_bot_commands() -> list[BotCommand]:
         BotCommand("start", "Show bot status and command overview"),
         BotCommand("new", "Start a new chat session"),
         BotCommand("model", "Show or switch the current provider model"),
+        BotCommand("reasoning", "Show or switch the current provider reasoning"),
         BotCommand("models", "Choose a provider and then a model"),
         BotCommand("providers", "Show and switch configured providers"),
         BotCommand("provider_add", "Create a new provider"),

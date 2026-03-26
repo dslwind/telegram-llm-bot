@@ -13,6 +13,7 @@ from .storage import (
     SlidingWindowRateLimiter,
 )
 from .utils import (
+    normalize_reasoning_effort,
     get_float_env,
     get_int_env,
     normalize_optional_config_text,
@@ -33,6 +34,7 @@ BOOTSTRAP_PROVIDER = ProviderConfig(
     api_key=normalize_optional_config_text(os.getenv("OPENAI_API_KEY")) or "",
     default_model=BOOTSTRAP_DEFAULT_MODEL,
     current_model=BOOTSTRAP_DEFAULT_MODEL,
+    reasoning_effort=normalize_reasoning_effort(os.getenv("OPENAI_REASONING_EFFORT")),
 )
 SYSTEM_PROMPT = os.getenv(
     "SYSTEM_PROMPT",
@@ -109,6 +111,7 @@ async def validate_provider_settings(
         api_key=api_key,
         default_model=default_model,
         current_model=default_model,
+        reasoning_effort=None,
     )
     try:
         ids = await fetch_available_model_ids(provider)
