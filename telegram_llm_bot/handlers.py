@@ -21,6 +21,7 @@ from .runtime import (
     chat_store,
     fetch_available_model_ids,
     get_current_provider,
+    get_provider_for_user,
     get_runtime_config,
     rate_limiter,
     runtime_config_store,
@@ -31,7 +32,9 @@ from .state import (
     clear_provider_wizard,
     get_models_menu_cache,
     get_provider_wizard,
+    get_user_provider_id,
     set_models_menu_cache,
+    set_user_provider_id,
 )
 from .ui import (
     build_model_settings_keyboard,
@@ -62,18 +65,35 @@ async def render_provider_summary(update: Update) -> None:
     )
 
 
-async def render_provider_picker(update: Update) -> None:
+async def render_provider_summary_for_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_pid = get_user_provider_id(context)
     if update.message:
         await update.message.reply_text(
-            build_provider_picker_text(),
+            build_provider_summary_text(user_provider_id=user_pid),
             parse_mode=ParseMode.HTML,
-            reply_markup=build_provider_picker_keyboard(),
+            reply_markup=build_provider_summary_keyboard(user_provider_id=user_pid),
         )
         return
     await edit_callback_text(
         update,
-        build_provider_picker_text(),
-        build_provider_picker_keyboard(),
+        build_provider_summary_text(user_provider_id=user_pid),
+        build_provider_summary_keyboard(user_provider_id=user_pid),
+    )
+
+
+async def render_provider_picker(update: Update, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
+    user_pid = get_user_provider_id(context) if context else None
+    if update.message:
+        await update.message.reply_text(
+            build_provider_picker_text(user_provider_id=user_pid),
+            parse_mode=ParseMode.HTML,
+            reply_markup=build_provider_picker_keyboard(user_provider_id=user_pid),
+        )
+        return
+    await edit_callback_text(
+        update,
+        build_provider_picker_text(user_provider_id=user_pid),
+        build_provider_picker_keyboard(user_provider_id=user_pid),
     )
 
 
@@ -137,14 +157,15 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     requested_model = " ".join(context.args).strip()
     if not requested_model:
+        user_pid = get_user_provider_id(context)
         await update.message.reply_text(
-            build_model_settings_text(),
+            build_model_settings_text(user_provider_id=user_pid),
             parse_mode=ParseMode.HTML,
             reply_markup=build_model_settings_keyboard(),
         )
         return
 
-    provider = get_current_provider()
+    provider = get_provider_for_user(get_user_provider_id(context))
     try:
         available_ids = await fetch_available_model_ids(provider)
     except Exception:
@@ -202,7 +223,7 @@ async def reasoning_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("Access denied for this bot.")
         return
 
-    provider = get_current_provider()
+    provider = get_provider_for_user(get_user_provider_id(context))
     requested_effort = " ".join(context.args).strip()
     if not requested_effort:
         await update.message.reply_text(
@@ -258,7 +279,7 @@ async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Access denied for this bot.")
         return
     clear_models_menu_cache(context)
-    await render_provider_picker(update)
+    await render_provider_picker(update, context)
 
 
 async def providers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -267,7 +288,7 @@ async def providers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not authorized(update.effective_user.id):
         await update.message.reply_text("Access denied for this bot.")
         return
-    await render_provider_summary(update)
+    await render_provider_summary_for_user(update, context)
 
 
 async def provider_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -411,19 +432,20 @@ async def provider_callback_router(update: Update, context: ContextTypes.DEFAULT
         if scope == "providers":
             if action == "summary":
                 await query.answer()
-                await render_provider_summary(update)
+                await render_provider_summary_for_user(update, context)
                 return
 
             if action == "switch":
                 provider_id = parts[2] if len(parts) > 2 else ""
-                provider = runtime_config_store.set_current_provider(provider_id)
+                provider = runtime_config_store.get_provider(provider_id)
+                set_user_provider_id(context, provider_id)
                 await query.answer(f"Current provider: {provider.name}")
-                await render_provider_summary(update)
+                await render_provider_summary_for_user(update, context)
                 return
 
             if action == "models_menu":
                 await query.answer()
-                await render_provider_picker(update)
+                await render_provider_picker(update, context)
                 return
 
             if action == "models":
@@ -433,7 +455,7 @@ async def provider_callback_router(update: Update, context: ContextTypes.DEFAULT
                 if not ids:
                     await query.answer("No models returned by this provider.", show_alert=True)
                     return
-                provider = runtime_config_store.set_current_provider(provider_id)
+                set_user_provider_id(context, provider_id)
                 set_models_menu_cache(context, provider.id, ids)
                 await query.answer(f"Current provider: {provider.name}")
                 await edit_callback_text(
@@ -448,10 +470,11 @@ async def provider_callback_router(update: Update, context: ContextTypes.DEFAULT
                 runtime_config_store.delete_provider(provider_id)
                 clear_models_menu_cache(context)
                 await query.answer("Provider deleted.")
+                user_pid = get_user_provider_id(context)
                 await edit_callback_text(
                     update,
-                    build_provider_summary_text(),
-                    build_provider_summary_keyboard(),
+                    build_provider_summary_text(user_provider_id=user_pid),
+                    build_provider_summary_keyboard(user_provider_id=user_pid),
                 )
                 return
 
@@ -468,7 +491,7 @@ async def provider_callback_router(update: Update, context: ContextTypes.DEFAULT
         if scope == "models":
             if action == "backproviders":
                 await query.answer()
-                await render_provider_picker(update)
+                await render_provider_picker(update, context)
                 return
 
             if action == "page":
@@ -595,7 +618,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_text = update.message.text.strip()
     if not user_text:
         return
-    await respond(update, context, user_text, user_text)
+    user_pid = get_user_provider_id(context)
+    await respond(update, context, user_text, user_text, user_provider_id=user_pid)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -634,4 +658,5 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         }
     )
 
-    await respond(update, context, user_content, caption or "[image]")
+    user_pid = get_user_provider_id(context)
+    await respond(update, context, user_content, caption or "[image]", user_provider_id=user_pid)

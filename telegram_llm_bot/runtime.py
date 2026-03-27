@@ -71,6 +71,20 @@ def get_current_provider() -> ProviderConfig:
     return runtime_config_store.get_current_provider()
 
 
+def get_provider_for_user(user_provider_id: str | None) -> ProviderConfig:
+    """Return the provider for a specific user.
+
+    If the user has a per-user provider_id that still exists, use it.
+    Otherwise fall back to the global default.
+    """
+    if user_provider_id:
+        try:
+            return runtime_config_store.get_provider(user_provider_id)
+        except KeyError:
+            pass
+    return runtime_config_store.get_current_provider()
+
+
 def get_active_model() -> str:
     return get_current_provider().current_model
 

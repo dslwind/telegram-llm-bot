@@ -115,6 +115,29 @@ class SQLiteChatStore:
             )
             self._conn.commit()
 
+    def append_message_pair(
+        self,
+        session: ChatSessionKey,
+        user_content: str,
+        assistant_content: str,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO chat_messages (chat_id, user_id, thread_id, role, content)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (session.chat_id, session.user_id, session.thread_id, "user", user_content),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO chat_messages (chat_id, user_id, thread_id, role, content)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (session.chat_id, session.user_id, session.thread_id, "assistant", assistant_content),
+            )
+            self._conn.commit()
+
     def get_recent_messages(
         self,
         session: ChatSessionKey,

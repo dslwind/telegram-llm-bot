@@ -15,6 +15,7 @@ from .runtime import (
     RATE_LIMIT_COUNT,
     RATE_LIMIT_WINDOW_SECONDS,
     get_current_provider,
+    get_provider_for_user,
     get_runtime_config,
 )
 from .storage import ProviderConfig
@@ -40,11 +41,11 @@ def format_provider_line(provider: ProviderConfig, current_provider_id: str) -> 
     )
 
 
-def build_model_settings_text() -> str:
+def build_model_settings_text(user_provider_id: str | None = None) -> str:
     runtime_config = get_runtime_config()
-    current_provider = get_current_provider()
+    current_provider = get_provider_for_user(user_provider_id)
     providers_text = "\n".join(
-        format_provider_line(provider, runtime_config.current_provider_id)
+        format_provider_line(provider, current_provider.id)
         for provider in runtime_config.providers
     )
     return (
@@ -76,11 +77,11 @@ def build_model_settings_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def build_provider_summary_text() -> str:
+def build_provider_summary_text(user_provider_id: str | None = None) -> str:
     runtime_config = get_runtime_config()
-    current_provider = get_current_provider()
+    current_provider = get_provider_for_user(user_provider_id)
     providers_text = "\n".join(
-        format_provider_line(provider, runtime_config.current_provider_id)
+        format_provider_line(provider, current_provider.id)
         for provider in runtime_config.providers
     )
     return (
@@ -99,13 +100,14 @@ def build_provider_summary_text() -> str:
     )
 
 
-def build_provider_summary_keyboard() -> InlineKeyboardMarkup:
+def build_provider_summary_keyboard(user_provider_id: str | None = None) -> InlineKeyboardMarkup:
     runtime_config = get_runtime_config()
+    effective_provider = get_provider_for_user(user_provider_id)
     rows: list[list[InlineKeyboardButton]] = []
     for provider in runtime_config.providers:
         label = (
             f"{provider.name} [current]"
-            if provider.id == runtime_config.current_provider_id
+            if provider.id == effective_provider.id
             else provider.name
         )
         rows.append([InlineKeyboardButton(label, callback_data=f"providers:switch:{provider.id}")])
@@ -113,8 +115,8 @@ def build_provider_summary_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def build_provider_picker_text() -> str:
-    current_provider = get_current_provider()
+def build_provider_picker_text(user_provider_id: str | None = None) -> str:
+    current_provider = get_provider_for_user(user_provider_id)
     return (
         "<b>Select provider</b>\n"
         f"current_provider: <code>{html.escape(current_provider.name)}</code> "
@@ -123,13 +125,14 @@ def build_provider_picker_text() -> str:
     )
 
 
-def build_provider_picker_keyboard() -> InlineKeyboardMarkup:
+def build_provider_picker_keyboard(user_provider_id: str | None = None) -> InlineKeyboardMarkup:
     runtime_config = get_runtime_config()
+    effective_provider = get_provider_for_user(user_provider_id)
     rows: list[list[InlineKeyboardButton]] = []
     for provider in runtime_config.providers:
         label = (
             f"{provider.name} [current]"
-            if provider.id == runtime_config.current_provider_id
+            if provider.id == effective_provider.id
             else provider.name
         )
         rows.append([InlineKeyboardButton(label, callback_data=f"providers:models:{provider.id}")])

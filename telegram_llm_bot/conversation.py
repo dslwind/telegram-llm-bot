@@ -16,6 +16,7 @@ from .runtime import (
     build_openai_client,
     chat_store,
     get_current_provider,
+    get_provider_for_user,
     provider_capability_cache,
     session_request_gate,
 )
@@ -246,13 +247,14 @@ async def stream_llm_answer(
     session: ChatSessionKey,
     user_content: str | list,
     out_message: Message,
+    user_provider_id: str | None = None,
 ) -> str:
     history_messages = await asyncio.to_thread(
         chat_store.get_recent_messages,
         session,
         MAX_HISTORY_MESSAGES,
     )
-    provider = get_current_provider()
+    provider = get_provider_for_user(user_provider_id)
 
     if _is_official_openai_base_url(provider.base_url):
         return await _stream_llm_answer_via_responses(
@@ -292,11 +294,18 @@ async def stream_llm_answer(
                 "Responses API failed for provider %s; falling back to chat completions",
                 provider.id,
             )
+        # The previous stream may have partially edited out_message.
+        # Use a fresh message so the user does not see content jump.
+        try:
+            await out_message.edit_text("Retrying with a different API...")
+        except (BadRequest, RetryAfter):
+            pass
+        fallback_message = await out_message.reply_text("Thinking...")
         return await _stream_llm_answer_via_chat_completions(
             provider,
             history_messages,
             user_content,
-            out_message,
+            fallback_message,
         )
 
 
@@ -305,6 +314,7 @@ async def respond(
     context: ContextTypes.DEFAULT_TYPE,
     user_content: str | list,
     history_text: str,
+    user_provider_id: str | None = None,
 ) -> None:
     if not update.effective_chat or not update.message:
         return
@@ -322,9 +332,10 @@ async def respond(
             action=ChatAction.TYPING,
         )
         out_message = await update.message.reply_text("Thinking...")
-        answer = await stream_llm_answer(session, user_content, out_message)
-        await asyncio.to_thread(chat_store.append_message, session, "user", history_text)
-        await asyncio.to_thread(chat_store.append_message, session, "assistant", answer)
+        answer = await stream_llm_answer(session, user_content, out_message, user_provider_id=user_provider_id)
+        await asyncio.to_thread(
+            chat_store.append_message_pair, session, history_text, answer,
+        )
     except Exception:
         logging.exception("Failed to process message")
         try:
