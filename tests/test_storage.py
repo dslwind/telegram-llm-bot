@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from telegram_llm_bot.constants import CONFIG_VERSION
+from telegram_llm_bot.session import ChatSessionKey
 from telegram_llm_bot.storage import (
     ProviderConfig,
     RuntimeConfigStore,
@@ -14,29 +15,73 @@ from telegram_llm_bot.storage import (
 
 
 class SQLiteChatStoreTests(unittest.TestCase):
-    def test_append_read_and_clear_history(self) -> None:
+    def test_append_read_and_clear_history_by_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "chat.db"
             store = SQLiteChatStore(str(db_path))
             self.addCleanup(store.close)
 
-            store.append_message(1001, "user", "hello")
-            store.append_message(1001, "assistant", "hi")
-            store.append_message(2002, "user", "other")
+            private_session = ChatSessionKey(chat_id=1001, user_id=1001)
+            group_session = ChatSessionKey(chat_id=-9001, user_id=1001)
+            topic_session = ChatSessionKey(chat_id=-9001, user_id=1001, thread_id=77)
+            other_user_session = ChatSessionKey(chat_id=-9001, user_id=2002)
+
+            store.append_message(private_session, "user", "hello")
+            store.append_message(private_session, "assistant", "hi")
+            store.append_message(group_session, "user", "group")
+            store.append_message(topic_session, "user", "topic")
+            store.append_message(other_user_session, "user", "other-user")
 
             self.assertEqual(
-                store.get_recent_messages(1001, 10),
+                store.get_recent_messages(private_session, 10),
+                [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                ],
+            )
+            self.assertEqual(
+                store.get_recent_messages(group_session, 10),
+                [{"role": "user", "content": "group"}],
+            )
+            self.assertEqual(
+                store.get_recent_messages(topic_session, 10),
+                [{"role": "user", "content": "topic"}],
+            )
+            self.assertEqual(
+                store.get_recent_messages(other_user_session, 10),
+                [{"role": "user", "content": "other-user"}],
+            )
+
+            store.clear_session_history(group_session)
+            self.assertEqual(store.get_recent_messages(group_session, 10), [])
+            self.assertEqual(
+                store.get_recent_messages(topic_session, 10),
+                [{"role": "user", "content": "topic"}],
+            )
+            self.assertEqual(
+                store.get_recent_messages(private_session, 10),
                 [
                     {"role": "user", "content": "hello"},
                     {"role": "assistant", "content": "hi"},
                 ],
             )
 
-            store.clear_user_history(1001)
-            self.assertEqual(store.get_recent_messages(1001, 10), [])
+    def test_private_session_reads_legacy_user_only_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "chat.db"
+            store = SQLiteChatStore(str(db_path))
+            self.addCleanup(store.close)
+
+            store._conn.execute(
+                "INSERT INTO chat_messages (user_id, role, content) VALUES (?, ?, ?)",
+                (1001, "user", "legacy"),
+            )
+            store._conn.commit()
+
+            session = ChatSessionKey(chat_id=1001, user_id=1001)
             self.assertEqual(
-                store.get_recent_messages(2002, 10),
-                [{"role": "user", "content": "other"}],
+                store.get_recent_messages(session, 10),
+                [{"role": "user", "content": "legacy"}],
             )
 
 

@@ -25,6 +25,7 @@ from .runtime import (
     rate_limiter,
     runtime_config_store,
 )
+from .session import build_chat_session_key
 from .state import (
     clear_models_menu_cache,
     clear_provider_wizard,
@@ -107,8 +108,11 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not authorized(update.effective_user.id):
         await update.message.reply_text("Access denied for this bot.")
         return
-    await asyncio.to_thread(chat_store.clear_user_history, update.effective_user.id)
-    await update.message.reply_text("Your conversation history has been cleared.")
+    session = build_chat_session_key(update)
+    if session is None:
+        return
+    await asyncio.to_thread(chat_store.clear_session_history, session)
+    await update.message.reply_text("This chat session history has been cleared.")
 
 
 async def new_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -117,8 +121,11 @@ async def new_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not authorized(update.effective_user.id):
         await update.message.reply_text("Access denied for this bot.")
         return
-    await asyncio.to_thread(chat_store.clear_user_history, update.effective_user.id)
-    await update.message.reply_text("Started a new session. Previous context was cleared.")
+    session = build_chat_session_key(update)
+    if session is None:
+        return
+    await asyncio.to_thread(chat_store.clear_session_history, session)
+    await update.message.reply_text("Started a new session. Current chat context was cleared.")
 
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

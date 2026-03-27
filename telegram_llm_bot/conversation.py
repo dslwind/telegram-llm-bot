@@ -16,7 +16,10 @@ from .runtime import (
     build_openai_client,
     chat_store,
     get_current_provider,
+    provider_capability_cache,
 )
+from .provider_capabilities import should_cache_unsupported_responses
+from .session import ChatSessionKey, build_chat_session_key
 from .storage import ProviderConfig
 from .ui import finalize_reply
 from .utils import ThinkTagFilter, strip_think_tags, truncate_for_telegram
@@ -239,13 +242,13 @@ async def _stream_llm_answer_via_chat_completions(
 
 
 async def stream_llm_answer(
-    user_id: int,
+    session: ChatSessionKey,
     user_content: str | list,
     out_message: Message,
 ) -> str:
     history_messages = await asyncio.to_thread(
         chat_store.get_recent_messages,
-        user_id,
+        session,
         MAX_HISTORY_MESSAGES,
     )
     provider = get_current_provider()
@@ -258,18 +261,36 @@ async def stream_llm_answer(
             out_message,
         )
 
-    try:
-        return await _stream_llm_answer_via_responses(
+    supports_responses = provider_capability_cache.get_supports_responses(provider)
+    if supports_responses is False:
+        return await _stream_llm_answer_via_chat_completions(
             provider,
             history_messages,
             user_content,
             out_message,
         )
-    except Exception:
-        logging.exception(
-            "Responses API failed for provider %s; falling back to chat completions",
-            provider.id,
+
+    try:
+        answer = await _stream_llm_answer_via_responses(
+            provider,
+            history_messages,
+            user_content,
+            out_message,
         )
+        provider_capability_cache.set_supports_responses(provider, True)
+        return answer
+    except Exception as exc:
+        if should_cache_unsupported_responses(exc):
+            provider_capability_cache.set_supports_responses(provider, False)
+            logging.warning(
+                "Responses API unsupported for provider %s; caching chat completions fallback",
+                provider.id,
+            )
+        else:
+            logging.exception(
+                "Responses API failed for provider %s; falling back to chat completions",
+                provider.id,
+            )
         return await _stream_llm_answer_via_chat_completions(
             provider,
             history_messages,
@@ -284,8 +305,10 @@ async def respond(
     user_content: str | list,
     history_text: str,
 ) -> None:
-    user_id = update.effective_user.id  # type: ignore[union-attr]
     if not update.effective_chat or not update.message:
+        return
+    session = build_chat_session_key(update)
+    if session is None:
         return
     try:
         await context.bot.send_chat_action(
@@ -293,9 +316,9 @@ async def respond(
             action=ChatAction.TYPING,
         )
         out_message = await update.message.reply_text("Thinking...")
-        answer = await stream_llm_answer(user_id, user_content, out_message)
-        await asyncio.to_thread(chat_store.append_message, user_id, "user", history_text)
-        await asyncio.to_thread(chat_store.append_message, user_id, "assistant", answer)
+        answer = await stream_llm_answer(session, user_content, out_message)
+        await asyncio.to_thread(chat_store.append_message, session, "user", history_text)
+        await asyncio.to_thread(chat_store.append_message, session, "assistant", answer)
     except Exception:
         logging.exception("Failed to process message")
         try:

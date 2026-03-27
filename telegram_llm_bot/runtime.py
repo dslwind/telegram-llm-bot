@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from .constants import CONFIG_PATH, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_NAME
+from .provider_capabilities import ProviderCapabilityCache
 from .storage import (
     ProviderConfig,
     RuntimeConfigStore,
@@ -53,6 +54,7 @@ MODELS_MENU_PAGE_SIZE = get_int_env("MODELS_MENU_PAGE_SIZE", 8)
 runtime_config_store = RuntimeConfigStore(CONFIG_PATH, BOOTSTRAP_PROVIDER)
 chat_store = SQLiteChatStore(SQLITE_PATH)
 rate_limiter = SlidingWindowRateLimiter(RATE_LIMIT_COUNT, RATE_LIMIT_WINDOW_SECONDS)
+provider_capability_cache = ProviderCapabilityCache()
 
 
 def authorized(user_id: int) -> bool:
