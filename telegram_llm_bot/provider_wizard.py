@@ -11,11 +11,13 @@ from .storage import ProviderConfig
 from .ui import try_delete_message
 from .utils import (
     format_base_url,
+    format_reasoning_effort,
     is_no_text,
     is_yes_text,
     mask_secret,
     normalize_base_url_input,
     normalize_optional_config_text,
+    normalize_reasoning_effort,
     normalize_required_text,
 )
 
@@ -55,6 +57,14 @@ async def prompt_provider_wizard_step(
             "Provider setup: send the default model id for this provider.\n"
             f"Current {current_label}: <code>{html.escape(str(draft['default_model']))}</code>"
         )
+    elif step == "reasoning_effort":
+        text = (
+            "Provider setup: send the reasoning effort for this provider.\n"
+            "Send <code>default</code> to use the model default, or one of "
+            "<code>none</code>, <code>minimal</code>, <code>low</code>, "
+            "<code>medium</code>, <code>high</code>, <code>xhigh</code>.\n"
+            f"Current {current_label}: <code>{html.escape(format_reasoning_effort(draft['reasoning_effort']))}</code>"
+        )
     elif step == "confirm":
         header = "Confirm provider update" if mode == "edit" else "Confirm new provider"
         provider_id_line = (
@@ -68,7 +78,8 @@ async def prompt_provider_wizard_step(
             f"name: <code>{html.escape(str(draft['name']))}</code>\n"
             f"base_url: <code>{html.escape(format_base_url(draft['base_url']))}</code>\n"
             f"api_key: <code>{html.escape(mask_secret(str(draft['api_key'])))}</code>\n"
-            f"default_model: <code>{html.escape(str(draft['default_model']))}</code>\n\n"
+            f"default_model: <code>{html.escape(str(draft['default_model']))}</code>\n"
+            f"reasoning_effort: <code>{html.escape(format_reasoning_effort(draft['reasoning_effort']))}</code>\n\n"
             "Reply with <code>yes</code> to save or <code>no</code> to cancel."
         )
     else:
@@ -91,6 +102,7 @@ def build_provider_draft_from_provider(provider: ProviderConfig) -> dict[str, st
         "base_url": provider.base_url,
         "api_key": provider.api_key,
         "default_model": provider.default_model,
+        "reasoning_effort": provider.reasoning_effort,
     }
 
 
@@ -108,6 +120,7 @@ async def start_provider_wizard(
             "base_url": None,
             "api_key": "",
             "default_model": "",
+            "reasoning_effort": None,
         }
     )
     context.user_data[PROVIDER_WIZARD_KEY] = {
@@ -134,6 +147,7 @@ async def save_provider_wizard(
     base_url = normalize_optional_config_text(draft["base_url"])
     api_key = normalize_required_text(draft["api_key"], "provider api_key")
     default_model = normalize_required_text(draft["default_model"], "provider default_model")
+    reasoning_effort = normalize_reasoning_effort(draft["reasoning_effort"])
 
     is_valid, error_message, ids = await validate_provider_settings(
         base_url,
@@ -168,6 +182,7 @@ async def save_provider_wizard(
             base_url=base_url,
             api_key=api_key,
             default_model=default_model,
+            reasoning_effort=reasoning_effort,
         )
         clear_provider_wizard(context)
         await update.message.reply_text(
@@ -189,6 +204,7 @@ async def save_provider_wizard(
         base_url=base_url,
         api_key=api_key,
         default_model=default_model,
+        reasoning_effort=reasoning_effort,
     )
     clear_provider_wizard(context)
     await update.message.reply_text(
@@ -239,6 +255,22 @@ async def handle_provider_wizard_text(
 
     if step == "default_model":
         draft["default_model"] = text
+        wizard["step"] = "reasoning_effort"
+        await prompt_provider_wizard_step(update, context)
+        return True
+
+    if step == "reasoning_effort":
+        try:
+            draft["reasoning_effort"] = normalize_reasoning_effort(text)
+        except RuntimeError:
+            await update.message.reply_text(
+                "Invalid reasoning effort.\n"
+                "Use <code>default</code> or one of: <code>none</code>, "
+                "<code>minimal</code>, <code>low</code>, <code>medium</code>, "
+                "<code>high</code>, <code>xhigh</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return True
         wizard["step"] = "confirm"
         await prompt_provider_wizard_step(update, context)
         return True

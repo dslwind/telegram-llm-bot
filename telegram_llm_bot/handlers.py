@@ -383,6 +383,10 @@ async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await prompt_provider_wizard_step(update, context)
         return
     if step == "default_model":
+        wizard["step"] = "reasoning_effort"
+        await prompt_provider_wizard_step(update, context)
+        return
+    if step == "reasoning_effort":
         wizard["step"] = "confirm"
         await prompt_provider_wizard_step(update, context)
         return

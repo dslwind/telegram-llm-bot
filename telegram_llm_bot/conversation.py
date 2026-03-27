@@ -17,6 +17,7 @@ from .runtime import (
     chat_store,
     get_current_provider,
     provider_capability_cache,
+    session_request_gate,
 )
 from .provider_capabilities import should_cache_unsupported_responses
 from .session import ChatSessionKey, build_chat_session_key
@@ -310,6 +311,11 @@ async def respond(
     session = build_chat_session_key(update)
     if session is None:
         return
+    if not session_request_gate.try_acquire(session):
+        await update.message.reply_text(
+            "Another request is already running in this chat session. Please wait for it to finish."
+        )
+        return
     try:
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id,
@@ -327,3 +333,5 @@ async def respond(
             )
         except Exception:
             logging.exception("Failed to send error reply")
+    finally:
+        session_request_gate.release(session)

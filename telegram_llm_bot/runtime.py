@@ -6,6 +6,7 @@ from openai import AsyncOpenAI
 
 from .constants import CONFIG_PATH, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_NAME
 from .provider_capabilities import ProviderCapabilityCache
+from .request_gate import SessionRequestGate
 from .storage import (
     ProviderConfig,
     RuntimeConfigStore,
@@ -55,6 +56,7 @@ runtime_config_store = RuntimeConfigStore(CONFIG_PATH, BOOTSTRAP_PROVIDER)
 chat_store = SQLiteChatStore(SQLITE_PATH)
 rate_limiter = SlidingWindowRateLimiter(RATE_LIMIT_COUNT, RATE_LIMIT_WINDOW_SECONDS)
 provider_capability_cache = ProviderCapabilityCache()
+session_request_gate = SessionRequestGate()
 
 
 def authorized(user_id: int) -> bool:
