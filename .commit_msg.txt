@@ -1,0 +1,7 @@
+fix(bot): provider id dot preservation, inline management buttons, and robust callback parsing
+
+- preserve dots in provider slugs so input names like a.b.c are consistent with their IDs
+- add inline Edit and Delete buttons for each provider in the /providers menu for better UX
+- fix callback data parsing using ":".join() to correctly handle IDs containing colons or dots
+- update /providers help text to reflect the transition from manual commands to button-based management
+- include unit tests for dot preservation and leading/trailing character stripping in slugify_provider_id

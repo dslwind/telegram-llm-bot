@@ -93,10 +93,8 @@ def build_provider_summary_text(user_provider_id: str | None = None) -> str:
         f"config_path: <code>{html.escape(CONFIG_PATH)}</code>\n\n"
         f"{providers_text}\n\n"
         "<b>Management</b>\n"
-        "<code>/provider_add</code>\n"
-        "<code>/provider_edit &lt;provider_id&gt;</code>\n"
-        "<code>/provider_delete &lt;provider_id&gt;</code>\n"
-        "<code>/provider_cancel</code>"
+        "<code>/provider_add</code> - add a provider\n"
+        "Use the Edit / Delete buttons below to manage existing providers."
     )
 
 
@@ -110,7 +108,11 @@ def build_provider_summary_keyboard(user_provider_id: str | None = None) -> Inli
             if provider.id == effective_provider.id
             else provider.name
         )
-        rows.append([InlineKeyboardButton(label, callback_data=f"providers:switch:{provider.id}")])
+        rows.append([
+            InlineKeyboardButton(label, callback_data=f"providers:switch:{provider.id}"),
+            InlineKeyboardButton("Edit", callback_data=f"providers:edit:{provider.id}"),
+            InlineKeyboardButton("Delete", callback_data=f"providers:delete:{provider.id}"),
+        ])
     rows.append([InlineKeyboardButton("Open model picker", callback_data="providers:models_menu")])
     return InlineKeyboardMarkup(rows)
 

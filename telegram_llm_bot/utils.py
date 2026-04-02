@@ -196,8 +196,8 @@ def format_reasoning_effort(reasoning_effort: str | None) -> str:
 
 
 def slugify_provider_id(name: str, existing_ids: set[str]) -> str:
-    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "provider"
-    base = base[:24].rstrip("-") or "provider"
+    base = re.sub(r"[^a-z0-9.]+", "-", name.lower()).strip("-").strip(".") or "provider"
+    base = base[:24].rstrip("-").rstrip(".") or "provider"
     candidate = base
     suffix = 2
     while candidate in existing_ids:

@@ -465,8 +465,53 @@ async def provider_callback_router(update: Update, context: ContextTypes.DEFAULT
                 )
                 return
 
+            if action == "edit":
+                provider_id = ":".join(parts[2:]) if len(parts) > 2 else ""
+                try:
+                    provider = runtime_config_store.get_provider(provider_id)
+                except KeyError:
+                    await query.answer("Provider not found.", show_alert=True)
+                    return
+                await query.answer()
+                await start_provider_wizard(update, context, mode="edit", provider=provider)
+                return
+
+            if action == "delete":
+                provider_id = ":".join(parts[2:]) if len(parts) > 2 else ""
+                try:
+                    provider = runtime_config_store.get_provider(provider_id)
+                except KeyError:
+                    await query.answer("Provider not found.", show_alert=True)
+                    return
+                if len(get_runtime_config().providers) <= 1:
+                    await query.answer("Cannot delete the last provider.", show_alert=True)
+                    return
+                keyboard = InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "Confirm delete",
+                                callback_data=f"providers:delete_confirm:{provider.id}",
+                            ),
+                            InlineKeyboardButton(
+                                "Cancel",
+                                callback_data=f"providers:delete_cancel:{provider.id}",
+                            ),
+                        ]
+                    ]
+                )
+                await query.answer()
+                await edit_callback_text(
+                    update,
+                    f"Delete provider <b>{html.escape(provider.name)}</b> "
+                    f"(<code>{html.escape(provider.id)}</code>)?\n"
+                    "This cannot be undone from the bot.",
+                    keyboard,
+                )
+                return
+
             if action == "delete_confirm":
-                provider_id = parts[2] if len(parts) > 2 else ""
+                provider_id = ":".join(parts[2:]) if len(parts) > 2 else ""
                 runtime_config_store.delete_provider(provider_id)
                 clear_models_menu_cache(context)
                 await query.answer("Provider deleted.")
@@ -479,7 +524,7 @@ async def provider_callback_router(update: Update, context: ContextTypes.DEFAULT
                 return
 
             if action == "delete_cancel":
-                provider_id = parts[2] if len(parts) > 2 else ""
+                provider_id = ":".join(parts[2:]) if len(parts) > 2 else ""
                 await query.answer("Delete cancelled.")
                 await edit_callback_text(
                     update,

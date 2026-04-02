@@ -71,6 +71,14 @@ class UtilsTests(unittest.TestCase):
         provider_id = slugify_provider_id("My Provider", {"my-provider"})
         self.assertEqual(provider_id, "my-provider-2")
 
+    def test_slugify_provider_id_preserves_dots(self) -> None:
+        provider_id = slugify_provider_id("sa.linux.yun", set())
+        self.assertEqual(provider_id, "sa.linux.yun")
+
+    def test_slugify_provider_id_strips_leading_trailing_dots(self) -> None:
+        provider_id = slugify_provider_id(".my.provider.", set())
+        self.assertEqual(provider_id, "my.provider")
+
 
 if __name__ == "__main__":
     unittest.main()
