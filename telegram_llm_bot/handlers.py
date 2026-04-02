@@ -46,6 +46,7 @@ from .ui import (
     build_provider_summary_keyboard,
     build_provider_summary_text,
     edit_callback_text,
+    try_delete_message,
 )
 from .utils import REASONING_EFFORT_VALUES, format_reasoning_effort, normalize_reasoning_effort
 
@@ -581,21 +582,19 @@ async def provider_callback_router(update: Update, context: ContextTypes.DEFAULT
                         provider.id,
                         model_id,
                     )
-                page = index // MODELS_MENU_PAGE_SIZE
                 await query.answer(
                     "Already using this model."
                     if model_id == current_model
                     else "Provider model updated."
                 )
-                await edit_callback_text(
-                    update,
-                    build_models_menu_text(provider, ids, page),
-                    build_models_keyboard(provider.id, ids, provider.current_model, page),
-                )
-                if model_id != current_model and query.message:
-                    await query.message.reply_text(
-                        f"Provider {provider.name} model set to {model_id}.\nSaved to {CONFIG_PATH}."
-                    )
+                if query.message:
+                    await try_delete_message(context, query.message.chat_id, query.message.message_id)
+                    if model_id != current_model:
+                        await query.message.reply_text(
+                            f"Provider {provider.name} model set to <code>{html.escape(model_id)}</code>.\n"
+                            f"Saved to {CONFIG_PATH}.",
+                            parse_mode=ParseMode.HTML,
+                        )
                 return
 
         await query.answer()
