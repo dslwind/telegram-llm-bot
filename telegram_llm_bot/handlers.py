@@ -146,6 +146,7 @@ async def new_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if session is None:
         return
     await asyncio.to_thread(chat_store.clear_session_history, session)
+    clear_provider_wizard(context)
     await update.message.reply_text("Started a new session. Current chat context was cleared.")
 
 

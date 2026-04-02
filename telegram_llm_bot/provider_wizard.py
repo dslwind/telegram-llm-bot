@@ -38,28 +38,28 @@ async def prompt_provider_wizard_step(
 
     if step == "name":
         text = (
-            "Provider setup: send the provider display name.\n"
+            "Provider setup: send the provider display name.\n\n<i>Send /provider_cancel to abort.</i>"
             f"Current {current_label}: <code>{html.escape(str(draft['name']))}</code>"
         )
     elif step == "base_url":
         text = (
-            "Provider setup: send the base URL.\n"
+            "Provider setup: send the base URL.\n\n<i>Send /provider_cancel to abort.</i>"
             "Send <code>-</code>, <code>official</code>, or <code>none</code> for the official OpenAI endpoint.\n"
             f"Current {current_label}: <code>{html.escape(format_base_url(draft['base_url']))}</code>"
         )
     elif step == "api_key":
         text = (
-            "Provider setup: send the API key for this provider.\n"
+            "Provider setup: send the API key for this provider.\n\n<i>Send /provider_cancel to abort.</i>"
             f"Current {current_label}: <code>{html.escape(mask_secret(str(draft['api_key'])))}</code>"
         )
     elif step == "default_model":
         text = (
-            "Provider setup: send the default model id for this provider.\n"
+            "Provider setup: send the default model id for this provider.\n\n<i>Send /provider_cancel to abort.</i>"
             f"Current {current_label}: <code>{html.escape(str(draft['default_model']))}</code>"
         )
     elif step == "reasoning_effort":
         text = (
-            "Provider setup: send the reasoning effort for this provider.\n"
+            "Provider setup: send the reasoning effort for this provider.\n\n<i>Send /provider_cancel to abort.</i>"
             "Send <code>default</code> to use the model default, or one of "
             "<code>none</code>, <code>minimal</code>, <code>low</code>, "
             "<code>medium</code>, <code>high</code>, <code>xhigh</code>.\n"
