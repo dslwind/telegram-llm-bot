@@ -4,3 +4,6 @@ __pycache__/
 .env
 data/
 .vscode
+.codex
+.codex/
+..env.swp
