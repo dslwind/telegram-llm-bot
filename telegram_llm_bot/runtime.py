@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from .constants import CONFIG_PATH, DEFAULT_PROVIDER_ID, DEFAULT_PROVIDER_NAME
+from .model_cache import ProviderModelListCache
 from .provider_capabilities import ProviderCapabilityCache
 from .request_gate import SessionRequestGate
 from .storage import (
@@ -51,11 +52,13 @@ RATE_LIMIT_WINDOW_SECONDS = get_int_env("RATE_LIMIT_WINDOW_SECONDS", 60)
 STREAM_EDIT_INTERVAL_SECONDS = get_float_env("STREAM_EDIT_INTERVAL_SECONDS", 0.8, 0.1)
 STREAM_MIN_CHARS_DELTA = get_int_env("STREAM_MIN_CHARS_DELTA", 24)
 MODELS_MENU_PAGE_SIZE = get_int_env("MODELS_MENU_PAGE_SIZE", 8)
+MODELS_CACHE_TTL_SECONDS = get_int_env("MODELS_CACHE_TTL_SECONDS", 300, 0)
 
 runtime_config_store = RuntimeConfigStore(CONFIG_PATH, BOOTSTRAP_PROVIDER)
 chat_store = SQLiteChatStore(SQLITE_PATH)
 rate_limiter = SlidingWindowRateLimiter(RATE_LIMIT_COUNT, RATE_LIMIT_WINDOW_SECONDS)
 provider_capability_cache = ProviderCapabilityCache()
+provider_model_list_cache = ProviderModelListCache(MODELS_CACHE_TTL_SECONDS)
 session_request_gate = SessionRequestGate()
 
 
@@ -96,7 +99,16 @@ def build_openai_client(provider: ProviderConfig) -> AsyncOpenAI:
     return AsyncOpenAI(**client_kwargs)
 
 
-async def fetch_available_model_ids(provider: ProviderConfig) -> list[str]:
+async def fetch_available_model_ids(
+    provider: ProviderConfig,
+    *,
+    use_cache: bool = True,
+) -> list[str]:
+    if use_cache:
+        cached = provider_model_list_cache.get(provider)
+        if cached is not None:
+            return cached
+
     client = build_openai_client(provider)
     models = await client.models.list()
     items = getattr(models, "data", None)
@@ -114,7 +126,10 @@ async def fetch_available_model_ids(provider: ProviderConfig) -> list[str]:
         if isinstance(model_id, str) and model_id:
             ids.append(model_id)
 
-    return sorted(set(ids))
+    resolved_ids = sorted(set(ids))
+    if use_cache and resolved_ids:
+        provider_model_list_cache.set(provider, resolved_ids)
+    return resolved_ids
 
 
 async def validate_provider_settings(
@@ -132,7 +147,7 @@ async def validate_provider_settings(
         reasoning_effort=None,
     )
     try:
-        ids = await fetch_available_model_ids(provider)
+        ids = await fetch_available_model_ids(provider, use_cache=False)
     except Exception as exc:
         logging.exception("Provider validation failed while fetching model list")
         return False, str(exc), []

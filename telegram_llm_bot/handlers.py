@@ -25,6 +25,7 @@ from .runtime import (
     get_runtime_config,
     rate_limiter,
     runtime_config_store,
+    session_request_gate,
 )
 from .session import build_chat_session_key
 from .state import (
@@ -112,6 +113,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/model <model_id> - switch the current provider model\n"
         "/reasoning - show current provider reasoning effort\n"
         "/reasoning <effort> - switch current provider reasoning effort\n"
+        "/stop - stop the current response in this chat session\n"
         "/models - choose a provider and then a model\n"
         "/providers - show provider summary and switching buttons\n"
         "/provider_add - create a provider\n"
@@ -272,6 +274,43 @@ async def reasoning_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"{format_reasoning_effort(updated_provider.reasoning_effort)}.\n"
         f"Saved to {CONFIG_PATH}."
     )
+
+
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+
+    session = build_chat_session_key(update)
+    if session is None:
+        return
+
+    cancel_result = session_request_gate.cancel(session)
+    active_request = cancel_result.active_request
+    if active_request is None:
+        await update.message.reply_text("No active request is running in this chat session.")
+        return
+
+    if not cancel_result.cancelled:
+        await update.message.reply_text("No cancellable request is running in this chat session.")
+        return
+
+    if active_request.chat_id is not None and active_request.message_id is not None:
+        try:
+            await context.bot.edit_message_text(
+                "Stopped.",
+                chat_id=active_request.chat_id,
+                message_id=active_request.message_id,
+            )
+        except Exception:
+            logging.info(
+                "Failed to edit active response placeholder while stopping session %s",
+                session,
+            )
+
+    await update.message.reply_text("Stopping the current request.")
 
 
 async def models_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -629,6 +668,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/model <model_id> - switch the current provider model\n"
         "/reasoning - show current provider reasoning effort\n"
         "/reasoning <effort> - switch current provider reasoning effort\n"
+        "/stop - stop the current response in this chat session\n"
         "/models - choose a provider and then a model\n"
         "/providers - show provider summary and switch buttons\n"
         "/provider_add - create a provider\n"

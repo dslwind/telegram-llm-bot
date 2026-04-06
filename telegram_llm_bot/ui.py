@@ -198,6 +198,7 @@ def get_bot_commands() -> list[BotCommand]:
         BotCommand("new", "Start a new chat session"),
         BotCommand("model", "Show or switch the current provider model"),
         BotCommand("reasoning", "Show or switch the current provider reasoning"),
+        BotCommand("stop", "Stop the current response"),
         BotCommand("models", "Choose a provider and then a model"),
         BotCommand("providers", "Show and switch configured providers"),
         BotCommand("provider_add", "Create a new provider"),

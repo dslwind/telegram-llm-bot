@@ -321,21 +321,35 @@ async def respond(
     session = build_chat_session_key(update)
     if session is None:
         return
-    if not session_request_gate.try_acquire(session):
+    task = asyncio.current_task()
+    if task is None:
+        return
+    if not session_request_gate.try_register(session, task):
         await update.message.reply_text(
             "Another request is already running in this chat session. Please wait for it to finish."
         )
         return
+    out_message: Message | None = None
     try:
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id,
             action=ChatAction.TYPING,
         )
         out_message = await update.message.reply_text("Thinking...")
-        answer = await stream_llm_answer(session, user_content, out_message, user_provider_id=user_provider_id)
-        await asyncio.to_thread(
-            chat_store.append_message_pair, session, history_text, answer,
+        session_request_gate.set_message_ref(
+            session,
+            out_message.chat_id,
+            out_message.message_id,
         )
+        answer = await stream_llm_answer(
+            session,
+            user_content,
+            out_message,
+            user_provider_id=user_provider_id,
+        )
+        await asyncio.to_thread(chat_store.append_message_pair, session, history_text, answer)
+    except asyncio.CancelledError:
+        logging.info("Cancelled active request for chat session %s", session)
     except Exception:
         logging.exception("Failed to process message")
         try:
@@ -345,4 +359,4 @@ async def respond(
         except Exception:
             logging.exception("Failed to send error reply")
     finally:
-        session_request_gate.release(session)
+        session_request_gate.release(session, task)
