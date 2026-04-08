@@ -37,33 +37,58 @@ async def prompt_provider_wizard_step(
     current_label = "existing value" if mode == "edit" else "draft value"
 
     if step == "name":
+        skip_hint = (
+            f"\nSend <code>.</code> to keep the {current_label}."
+            if draft["name"]
+            else ""
+        )
         text = (
-            "Provider setup: send the provider display name.\n\n<i>Send /provider_cancel to abort.</i>"
+            "Provider setup: send the provider display name.\n"
             f"Current {current_label}: <code>{html.escape(str(draft['name']))}</code>"
+            f"{skip_hint}"
+            f"\n\n<i>Send /provider_cancel to abort.</i>"
         )
     elif step == "base_url":
         text = (
-            "Provider setup: send the base URL.\n\n<i>Send /provider_cancel to abort.</i>"
+            "Provider setup: send the base URL.\n"
             "Send <code>-</code>, <code>official</code>, or <code>none</code> for the official OpenAI endpoint.\n"
             f"Current {current_label}: <code>{html.escape(format_base_url(draft['base_url']))}</code>"
+            f"\nSend <code>.</code> to keep the {current_label}."
+            f"\n\n<i>Send /provider_cancel to abort.</i>"
         )
     elif step == "api_key":
+        skip_hint = (
+            f"\nSend <code>.</code> to keep the {current_label}."
+            if draft["api_key"]
+            else ""
+        )
         text = (
-            "Provider setup: send the API key for this provider.\n\n<i>Send /provider_cancel to abort.</i>"
+            "Provider setup: send the API key for this provider.\n"
             f"Current {current_label}: <code>{html.escape(mask_secret(str(draft['api_key'])))}</code>"
+            f"{skip_hint}"
+            f"\n\n<i>Send /provider_cancel to abort.</i>"
         )
     elif step == "default_model":
+        skip_hint = (
+            f"\nSend <code>.</code> to keep the {current_label}."
+            if draft["default_model"]
+            else ""
+        )
         text = (
-            "Provider setup: send the default model id for this provider.\n\n<i>Send /provider_cancel to abort.</i>"
+            "Provider setup: send the default model id for this provider.\n"
             f"Current {current_label}: <code>{html.escape(str(draft['default_model']))}</code>"
+            f"{skip_hint}"
+            f"\n\n<i>Send /provider_cancel to abort.</i>"
         )
     elif step == "reasoning_effort":
         text = (
-            "Provider setup: send the reasoning effort for this provider.\n\n<i>Send /provider_cancel to abort.</i>"
+            "Provider setup: send the reasoning effort for this provider.\n"
             "Send <code>default</code> to use the model default, or one of "
             "<code>none</code>, <code>minimal</code>, <code>low</code>, "
             "<code>medium</code>, <code>high</code>, <code>xhigh</code>.\n"
             f"Current {current_label}: <code>{html.escape(format_reasoning_effort(draft['reasoning_effort']))}</code>"
+            f"\nSend <code>.</code> to keep the {current_label}."
+            f"\n\n<i>Send /provider_cancel to abort.</i>"
         )
     elif step == "confirm":
         header = "Confirm provider update" if mode == "edit" else "Confirm new provider"
@@ -227,19 +252,25 @@ async def handle_provider_wizard_text(
     mode = str(wizard["mode"])
 
     if step == "name":
-        draft["name"] = text
+        if text == "." and draft["name"]:
+            pass  # keep existing draft value
+        else:
+            draft["name"] = text
         wizard["step"] = "base_url"
         await prompt_provider_wizard_step(update, context)
         return True
 
     if step == "base_url":
-        draft["base_url"] = normalize_base_url_input(text)
+        if text != ".":
+            draft["base_url"] = normalize_base_url_input(text)
         wizard["step"] = "api_key"
         await prompt_provider_wizard_step(update, context)
         return True
 
     if step == "api_key":
-        draft["api_key"] = text
+        is_skip = text == "." and draft["api_key"]
+        if not is_skip:
+            draft["api_key"] = text
         chat_id = update.effective_chat.id if update.effective_chat else None
         if chat_id is not None:
             await try_delete_message(context, chat_id, update.message.message_id)
@@ -254,12 +285,17 @@ async def handle_provider_wizard_text(
         return True
 
     if step == "default_model":
-        draft["default_model"] = text
+        if text != "." or not draft["default_model"]:
+            draft["default_model"] = text
         wizard["step"] = "reasoning_effort"
         await prompt_provider_wizard_step(update, context)
         return True
 
     if step == "reasoning_effort":
+        if text == ".":
+            wizard["step"] = "confirm"
+            await prompt_provider_wizard_step(update, context)
+            return True
         try:
             draft["reasoning_effort"] = normalize_reasoning_effort(text)
         except RuntimeError:
