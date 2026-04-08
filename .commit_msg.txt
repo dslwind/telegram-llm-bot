@@ -1,4 +1,0 @@
-fix(bot): allow skipping provider wizard steps with dot shortcut
-
-- support sending . in any wizard step to keep the current draft value and advance
-- show the . hint only when a meaningful default exists, avoiding confusion on required fields

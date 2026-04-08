@@ -297,7 +297,7 @@ async def stream_llm_answer(
         # The previous stream may have partially edited out_message.
         # Use a fresh message so the user does not see content jump.
         try:
-            await out_message.edit_text("Retrying with a different API...")
+            await out_message.edit_text("Responses API not supported, falling back to Chat Completions...")
         except (BadRequest, RetryAfter):
             pass
         fallback_message = await out_message.reply_text("Thinking...")
