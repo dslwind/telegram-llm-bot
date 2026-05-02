@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from telegram import Message, Update
 from telegram.constants import ChatAction
-from telegram.error import BadRequest, RetryAfter
+from telegram.error import BadRequest, NetworkError, RetryAfter
 from telegram.ext import ContextTypes
 
 from .runtime import (
@@ -32,6 +32,10 @@ def _is_official_openai_base_url(base_url: str | None) -> bool:
         return True
     parsed = urlparse(base_url)
     return parsed.netloc == "api.openai.com"
+
+
+def _prefer_chat_completions_for_provider(provider: ProviderConfig) -> bool:
+    return provider.prefer_chat_completions
 
 
 def _chat_content_to_responses_content(user_content: str | list) -> str | list[dict[str, str]]:
@@ -264,6 +268,15 @@ async def stream_llm_answer(
             out_message,
         )
 
+    if _prefer_chat_completions_for_provider(provider):
+        provider_capability_cache.set_supports_responses(provider, False)
+        return await _stream_llm_answer_via_chat_completions(
+            provider,
+            history_messages,
+            user_content,
+            out_message,
+        )
+
     supports_responses = provider_capability_cache.get_supports_responses(provider)
     if supports_responses is False:
         return await _stream_llm_answer_via_chat_completions(
@@ -296,11 +309,7 @@ async def stream_llm_answer(
             )
         # The previous stream may have partially edited out_message.
         # Use a fresh message so the user does not see content jump.
-        try:
-            await out_message.edit_text("Responses API not supported, falling back to Chat Completions...")
-        except (BadRequest, RetryAfter):
-            pass
-        fallback_message = await out_message.reply_text("Thinking...")
+        fallback_message = out_message
         return await _stream_llm_answer_via_chat_completions(
             provider,
             history_messages,
@@ -350,6 +359,14 @@ async def respond(
         await asyncio.to_thread(chat_store.append_message_pair, session, history_text, answer)
     except asyncio.CancelledError:
         logging.info("Cancelled active request for chat session %s", session)
+    except NetworkError:
+        logging.exception("Telegram network error while processing message")
+        try:
+            await update.message.reply_text(
+                "Telegram 网络刚才出了点波动，我没能把状态或结果发出去。请直接再试一次。"
+            )
+        except Exception:
+            logging.exception("Failed to send Telegram network error reply")
     except Exception:
         logging.exception("Failed to process message")
         try:

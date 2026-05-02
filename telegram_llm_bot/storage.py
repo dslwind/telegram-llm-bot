@@ -26,8 +26,9 @@ class ProviderConfig:
     default_model: str
     current_model: str
     reasoning_effort: str | None
+    prefer_chat_completions: bool = False
 
-    def as_json(self) -> dict[str, str | None]:
+    def as_json(self) -> dict[str, str | bool | None]:
         return {
             "id": self.id,
             "name": self.name,
@@ -36,6 +37,7 @@ class ProviderConfig:
             "default_model": self.default_model,
             "current_model": self.current_model,
             "reasoning_effort": self.reasoning_effort,
+            "prefer_chat_completions": self.prefer_chat_completions,
         }
 
 
@@ -279,6 +281,7 @@ class RuntimeConfigStore:
             default_model=model,
             current_model=model,
             reasoning_effort=self._bootstrap_provider.reasoning_effort,
+            prefer_chat_completions=self._bootstrap_provider.prefer_chat_completions,
         )
 
     def _provider_from_payload(self, payload: object) -> ProviderConfig:
@@ -300,6 +303,7 @@ class RuntimeConfigStore:
         )
         base_url = normalize_optional_config_text(payload.get("base_url"))
         reasoning_effort = normalize_reasoning_effort(payload.get("reasoning_effort"))
+        prefer_chat_completions = bool(payload.get("prefer_chat_completions", False))
 
         return ProviderConfig(
             id=provider_id,
@@ -309,6 +313,7 @@ class RuntimeConfigStore:
             default_model=default_model,
             current_model=current_model,
             reasoning_effort=reasoning_effort,
+            prefer_chat_completions=prefer_chat_completions,
         )
 
     def _parse_v2_config(self, raw_payload: dict[str, object]) -> RuntimeConfigV2:

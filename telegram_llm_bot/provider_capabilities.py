@@ -54,4 +54,14 @@ def should_cache_unsupported_responses(exc: Exception) -> bool:
     ):
         return True
 
+    if any(
+        needle in message
+        for needle in (
+            "didn't receive a `response.completed` event",
+            "did not receive a `response.completed` event",
+            "response.completed",
+        )
+    ):
+        return True
+
     return False
