@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,107 @@ from telegram_llm_bot.storage import (
 
 
 class SQLiteChatStoreTests(unittest.TestCase):
+    def test_managed_session_lifecycle_and_title_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "chat.db"
+            store = SQLiteChatStore(str(db_path))
+            self.addCleanup(store.close)
+
+            session = ChatSessionKey(chat_id=1001, user_id=1001)
+            first_id = store.ensure_active_managed_session(session)
+
+            store.append_message_pair(
+                session,
+                "Please explain SQLite migrations for Telegram bot sessions in detail.",
+                "Sure.",
+            )
+            active = store.get_active_managed_session(session)
+            self.assertEqual(active["id"], first_id)
+            self.assertEqual(active["title"], "Please explain SQLite migrations for Tel...")
+
+            second_id = store.create_managed_session(session)
+            self.assertNotEqual(second_id, first_id)
+            self.assertEqual(store.get_recent_messages(session, 10), [])
+
+            switched = store.switch_managed_session(session, first_id)
+            self.assertEqual(switched["id"], first_id)
+            self.assertEqual(
+                store.get_recent_messages(session, 10),
+                [
+                    {
+                        "role": "user",
+                        "content": "Please explain SQLite migrations for Telegram bot sessions in detail.",
+                    },
+                    {"role": "assistant", "content": "Sure."},
+                ],
+            )
+
+            store.archive_managed_session(session, first_id)
+            self.assertEqual(store.get_active_managed_session(session)["id"], second_id)
+            archived = next(
+                item for item in store.list_managed_sessions(session) if item["id"] == first_id
+            )
+            self.assertEqual(archived["status"], "archived")
+
+            store.switch_managed_session(session, first_id)
+            self.assertEqual(store.get_active_managed_session(session)["id"], first_id)
+            self.assertEqual(store.get_active_managed_session(session)["status"], "active")
+
+            store.delete_managed_session(session, first_id)
+            self.assertEqual(store.get_active_managed_session(session)["id"], second_id)
+            self.assertNotIn(first_id, [item["id"] for item in store.list_managed_sessions(session)])
+
+    def test_deleting_last_session_creates_safe_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "chat.db"
+            store = SQLiteChatStore(str(db_path))
+            self.addCleanup(store.close)
+
+            session = ChatSessionKey(chat_id=-9001, user_id=1001, thread_id=77)
+            session_id = store.ensure_active_managed_session(session)
+            store.delete_managed_session(session, session_id)
+
+            replacement = store.get_active_managed_session(session)
+            self.assertNotEqual(replacement["id"], session_id)
+            self.assertEqual(replacement["title"], SQLiteChatStore.DEFAULT_SESSION_TITLE)
+
+    def test_managed_session_migration_adds_missing_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "chat.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE managed_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    thread_id INTEGER,
+                    title TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO managed_sessions (chat_id, user_id, thread_id, title) VALUES (?, ?, ?, ?)",
+                (1001, 1001, None, "Old session"),
+            )
+            conn.commit()
+            conn.close()
+
+            store = SQLiteChatStore(str(db_path))
+            self.addCleanup(store.close)
+
+            columns = {
+                row[1]
+                for row in store._conn.execute("PRAGMA table_info(managed_sessions)")
+            }
+            self.assertIn("status", columns)
+            self.assertIn("created_at", columns)
+            self.assertIn("updated_at", columns)
+            self.assertEqual(
+                store.get_active_managed_session(ChatSessionKey(chat_id=1001, user_id=1001))["title"],
+                "Old session",
+            )
+
     def test_append_read_and_clear_history_by_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "chat.db"

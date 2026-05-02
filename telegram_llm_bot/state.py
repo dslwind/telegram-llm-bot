@@ -1,6 +1,6 @@
 from telegram.ext import ContextTypes
 
-from .constants import MODELS_MENU_CACHE_KEY, PROVIDER_WIZARD_KEY, USER_PROVIDER_KEY
+from .constants import MODELS_MENU_CACHE_KEY, PROVIDER_WIZARD_KEY, SESSION_RENAME_KEY, USER_PROVIDER_KEY
 
 
 def get_models_menu_cache(context: ContextTypes.DEFAULT_TYPE) -> dict[str, object] | None:
@@ -49,3 +49,18 @@ def get_user_provider_id(context: ContextTypes.DEFAULT_TYPE) -> str | None:
 
 def set_user_provider_id(context: ContextTypes.DEFAULT_TYPE, provider_id: str) -> None:
     context.user_data[USER_PROVIDER_KEY] = provider_id
+
+
+def get_session_rename(context: ContextTypes.DEFAULT_TYPE) -> dict[str, object] | None:
+    pending = context.user_data.get(SESSION_RENAME_KEY)
+    if isinstance(pending, dict) and isinstance(pending.get("session_id"), int):
+        return pending
+    return None
+
+
+def set_session_rename(context: ContextTypes.DEFAULT_TYPE, session_id: int) -> None:
+    context.user_data[SESSION_RENAME_KEY] = {"session_id": session_id}
+
+
+def clear_session_rename(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(SESSION_RENAME_KEY, None)

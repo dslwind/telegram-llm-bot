@@ -14,6 +14,7 @@ from .handlers import (
     handle_photo,
     handle_text,
     help_command,
+    delete_session_command,
     model_command,
     models_command,
     new_session_command,
@@ -25,9 +26,14 @@ from .handlers import (
     providers_command,
     reasoning_command,
     reset_command,
+    rename_session_command,
+    session_callback_router,
+    sessions_command,
+    stash_command,
     stop_command,
     skip_command,
     start_command,
+    switch_session_command,
 )
 from .runtime import SQLITE_PATH, TELEGRAM_BOT_TOKEN, WHITELIST_USER_IDS, chat_store
 from .ui import sync_bot_commands
@@ -47,6 +53,11 @@ def main() -> None:
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(sync_bot_commands).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler(["new", "newchat"], new_session_command))
+    app.add_handler(CommandHandler("sessions", sessions_command))
+    app.add_handler(CommandHandler("switch", switch_session_command))
+    app.add_handler(CommandHandler("stash", stash_command))
+    app.add_handler(CommandHandler("session_delete", delete_session_command))
+    app.add_handler(CommandHandler("session_rename", rename_session_command))
     app.add_handler(CommandHandler("model", model_command))
     app.add_handler(CommandHandler("reasoning", reasoning_command))
     app.add_handler(CommandHandler("stop", stop_command))
@@ -57,6 +68,7 @@ def main() -> None:
     app.add_handler(CommandHandler("provider_delete", provider_delete_command))
     app.add_handler(CommandHandler("provider_cancel", provider_cancel_command))
     app.add_handler(CommandHandler("skip", skip_command))
+    app.add_handler(CallbackQueryHandler(session_callback_router, pattern=r"^sessions:"))
     app.add_handler(
         CallbackQueryHandler(provider_callback_router, pattern=r"^(providers|models):")
     )

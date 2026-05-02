@@ -28,13 +28,21 @@ from .runtime import (
     session_request_gate,
 )
 from .session import build_chat_session_key
+from .session_manager import (
+    build_delete_confirm_keyboard,
+    build_sessions_keyboard,
+    build_sessions_text,
+)
 from .state import (
     clear_models_menu_cache,
     clear_provider_wizard,
+    clear_session_rename,
     get_models_menu_cache,
     get_provider_wizard,
+    get_session_rename,
     get_user_provider_id,
     set_models_menu_cache,
+    set_session_rename,
     set_user_provider_id,
 )
 from .ui import (
@@ -50,6 +58,10 @@ from .ui import (
     try_delete_message,
 )
 from .utils import REASONING_EFFORT_VALUES, format_reasoning_effort, normalize_reasoning_effort
+
+
+def _parse_session_id_arg(value: str) -> int:
+    return int(value.strip().lstrip("#"))
 
 
 async def render_provider_summary(update: Update) -> None:
@@ -109,6 +121,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Hi, I am ready. Send me any message and I will stream an LLM reply.\n"
         "Commands:\n"
         "/new - start a new session\n"
+        "/sessions - manage saved sessions\n"
+        "/switch <session_id> - switch active session\n"
+        "/stash - archive current session and start/resume another\n"
+        "/session_delete <session_id> - permanently delete a session\n"
+        "/session_rename <session_id> <title> - rename a session\n"
         "/model - show current provider settings\n"
         "/model <model_id> - switch the current provider model\n"
         "/reasoning - show current provider reasoning effort\n"
@@ -147,9 +164,118 @@ async def new_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     session = build_chat_session_key(update)
     if session is None:
         return
-    await asyncio.to_thread(chat_store.clear_session_history, session)
+    session_id = await asyncio.to_thread(
+        chat_store.create_managed_session,
+        session,
+        "New session",
+    )
     clear_provider_wizard(context)
-    await update.message.reply_text("Started a new session. Current chat context was cleared.")
+    await update.message.reply_text(f"Started a new session: #{session_id}.")
+
+
+async def sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+    session = build_chat_session_key(update)
+    if session is None:
+        return
+    await update.message.reply_text(
+        await asyncio.to_thread(build_sessions_text, chat_store, session),
+        parse_mode=ParseMode.HTML,
+        reply_markup=await asyncio.to_thread(build_sessions_keyboard, chat_store, session),
+    )
+
+
+async def stash_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+    session = build_chat_session_key(update)
+    if session is None:
+        return
+    active = await asyncio.to_thread(chat_store.get_active_managed_session, session)
+    await asyncio.to_thread(chat_store.archive_managed_session, session, int(active["id"]))
+    new_active = await asyncio.to_thread(chat_store.get_active_managed_session, session)
+    await update.message.reply_text(
+        f"Archived session #{active['id']}. Current session is now #{new_active['id']}."
+    )
+
+
+async def switch_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+    session = build_chat_session_key(update)
+    if session is None:
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /switch <session_id>")
+        return
+    try:
+        switched = await asyncio.to_thread(
+            chat_store.switch_managed_session,
+            session,
+            _parse_session_id_arg(context.args[0]),
+        )
+    except (ValueError, KeyError):
+        await update.message.reply_text("Session not found. Use /sessions to list sessions.")
+        return
+    await update.message.reply_text(f"Switched to session #{switched['id']}: {switched['title']}")
+
+
+async def delete_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+    session = build_chat_session_key(update)
+    if session is None:
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /session_delete <session_id>")
+        return
+    try:
+        session_id = _parse_session_id_arg(context.args[0])
+        await asyncio.to_thread(chat_store.delete_managed_session, session, session_id)
+    except (ValueError, KeyError):
+        await update.message.reply_text("Session not found. Use /sessions to list sessions.")
+        return
+    await update.message.reply_text(f"Deleted session #{session_id}.")
+
+
+async def rename_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await update.message.reply_text("Access denied for this bot.")
+        return
+    session = build_chat_session_key(update)
+    if session is None:
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /session_rename <session_id> <title>")
+        return
+    try:
+        session_id = _parse_session_id_arg(context.args[0])
+        title = " ".join(context.args[1:]).strip()
+        renamed = await asyncio.to_thread(
+            chat_store.rename_managed_session,
+            session,
+            session_id,
+            title,
+        )
+    except (ValueError, KeyError):
+        await update.message.reply_text("Session not found. Use /sessions to list sessions.")
+        return
+    await update.message.reply_text(f"Renamed session #{renamed['id']}: {renamed['title']}")
 
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -456,6 +582,84 @@ async def skip_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("/skip is not valid at this step.")
 
 
+async def session_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not update.effective_user:
+        return
+    if not authorized(update.effective_user.id):
+        await query.answer("Access denied for this bot.", show_alert=True)
+        return
+    session = build_chat_session_key(update)
+    if session is None:
+        await query.answer("No chat session found.", show_alert=True)
+        return
+    parts = (query.data or "").split(":")
+    action = parts[1] if len(parts) > 1 else ""
+    try:
+        if action == "new":
+            sid = await asyncio.to_thread(chat_store.create_managed_session, session, "New session")
+            await query.answer(f"Created session #{sid}")
+        elif action == "switch":
+            if len(parts) < 3:
+                raise ValueError("missing session id")
+            item = await asyncio.to_thread(chat_store.switch_managed_session, session, int(parts[2]))
+            await query.answer(f"Switched to #{item['id']}")
+            if query.message:
+                await try_delete_message(context, query.message.chat_id, query.message.message_id)
+                await query.message.reply_text(
+                    f"Switched to session #{item['id']}: {item['title']}"
+                )
+            return
+        elif action == "rename":
+            if len(parts) < 3:
+                raise ValueError("missing session id")
+            session_id = int(parts[2])
+            set_session_rename(context, session_id)
+            await query.answer()
+            await edit_callback_text(
+                update,
+                f"Send the new title for session <code>#{session_id}</code>.\n"
+                "Use /provider_cancel to cancel this pending rename.",
+                None,
+            )
+            return
+        elif action == "archive":
+            if len(parts) < 3:
+                raise ValueError("missing session id")
+            await asyncio.to_thread(chat_store.archive_managed_session, session, int(parts[2]))
+            await query.answer("Session archived")
+        elif action == "confirm_delete":
+            if len(parts) < 3:
+                raise ValueError("missing session id")
+            session_id = int(parts[2])
+            await query.answer()
+            await edit_callback_text(
+                update,
+                f"Delete session <code>#{session_id}</code> permanently? This cannot be undone.",
+                build_delete_confirm_keyboard(session_id),
+            )
+            return
+        elif action == "delete":
+            if len(parts) < 3:
+                raise ValueError("missing session id")
+            await asyncio.to_thread(chat_store.delete_managed_session, session, int(parts[2]))
+            await query.answer("Session deleted")
+        elif action == "refresh":
+            await query.answer()
+        else:
+            await query.answer()
+        await edit_callback_text(
+            update,
+            await asyncio.to_thread(build_sessions_text, chat_store, session),
+            await asyncio.to_thread(build_sessions_keyboard, chat_store, session),
+        )
+    except (ValueError, KeyError):
+        await query.answer("Session not found. Refresh /sessions.", show_alert=True)
+    except Exception:
+        logging.exception("Failed to handle session callback")
+        await query.answer("Failed to update sessions.", show_alert=True)
+
+
 async def provider_callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not update.effective_user:
@@ -664,6 +868,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         "Commands:\n"
         "/new - start a new session\n"
+        "/sessions - manage saved sessions\n"
+        "/switch <session_id> - switch active session\n"
+        "/stash - archive current session and start/resume another\n"
+        "/session_delete <session_id> - permanently delete a session\n"
+        "/session_rename <session_id> <title> - rename a session\n"
         "/model - show current provider settings\n"
         "/model <model_id> - switch the current provider model\n"
         "/reasoning - show current provider reasoning effort\n"
@@ -692,6 +901,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if get_provider_wizard(context) is not None:
         await handle_provider_wizard_text(update, context)
+        return
+
+    pending_rename = get_session_rename(context)
+    if pending_rename is not None:
+        session = build_chat_session_key(update)
+        if session is None:
+            return
+        title = update.message.text.strip()
+        try:
+            renamed = await asyncio.to_thread(
+                chat_store.rename_managed_session,
+                session,
+                int(pending_rename["session_id"]),
+                title,
+            )
+        except KeyError:
+            clear_session_rename(context)
+            await update.message.reply_text("Session not found. Use /sessions to refresh the list.")
+            return
+        clear_session_rename(context)
+        await update.message.reply_text(f"Renamed session #{renamed['id']}: {renamed['title']}")
         return
 
     allowed, retry_after = rate_limiter.allow(user_id)

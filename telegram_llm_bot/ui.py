@@ -195,7 +195,12 @@ def build_models_keyboard(
 def get_bot_commands() -> list[BotCommand]:
     return [
         BotCommand("start", "Show bot status and command overview"),
-        BotCommand("new", "Start a new chat session"),
+        BotCommand("new", "Create and switch to a new chat session"),
+        BotCommand("sessions", "Manage chat sessions"),
+        BotCommand("switch", "Switch chat session by id"),
+        BotCommand("stash", "Archive the current chat session"),
+        BotCommand("session_delete", "Delete a chat session by id"),
+        BotCommand("session_rename", "Rename a chat session by id"),
         BotCommand("model", "Show or switch the current provider model"),
         BotCommand("reasoning", "Show or switch the current provider reasoning"),
         BotCommand("stop", "Stop the current response"),

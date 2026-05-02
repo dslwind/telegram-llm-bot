@@ -1,9 +1,11 @@
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from collections import defaultdict, deque
 from dataclasses import dataclass, replace
 
@@ -56,6 +58,8 @@ class RuntimeConfigV2:
 
 
 class SQLiteChatStore:
+    DEFAULT_SESSION_TITLE = "New session"
+
     def __init__(self, db_path: str) -> None:
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -67,11 +71,37 @@ class SQLiteChatStore:
             self._conn.execute("PRAGMA journal_mode=WAL;")
             self._conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS managed_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    thread_id INTEGER,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS active_sessions (
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    thread_id INTEGER NOT NULL,
+                    session_id INTEGER NOT NULL,
+                    PRIMARY KEY (chat_id, user_id, thread_id)
+                )
+                """
+            )
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS chat_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     chat_id INTEGER,
                     user_id INTEGER NOT NULL,
                     thread_id INTEGER,
+                    managed_session_id INTEGER,
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -86,6 +116,28 @@ class SQLiteChatStore:
                 self._conn.execute("ALTER TABLE chat_messages ADD COLUMN chat_id INTEGER")
             if "thread_id" not in columns:
                 self._conn.execute("ALTER TABLE chat_messages ADD COLUMN thread_id INTEGER")
+            if "managed_session_id" not in columns:
+                self._conn.execute("ALTER TABLE chat_messages ADD COLUMN managed_session_id INTEGER")
+            managed_columns = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(managed_sessions)").fetchall()
+            }
+            if "status" not in managed_columns:
+                self._conn.execute(
+                    "ALTER TABLE managed_sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+                )
+            if "created_at" not in managed_columns:
+                self._conn.execute("ALTER TABLE managed_sessions ADD COLUMN created_at TEXT")
+                self._conn.execute(
+                    "UPDATE managed_sessions SET created_at = COALESCE(created_at, ?)",
+                    (self._now(),),
+                )
+            if "updated_at" not in managed_columns:
+                self._conn.execute("ALTER TABLE managed_sessions ADD COLUMN updated_at TEXT")
+                self._conn.execute(
+                    "UPDATE managed_sessions SET updated_at = COALESCE(updated_at, ?)",
+                    (self._now(),),
+                )
             self._conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_chat_messages_user_id_id
@@ -98,23 +150,268 @@ class SQLiteChatStore:
                 ON chat_messages (chat_id, user_id, thread_id, id)
                 """
             )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_managed_session_id
+                ON chat_messages (managed_session_id, id)
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_managed_sessions_owner
+                ON managed_sessions (chat_id, user_id, thread_id, status, updated_at)
+                """
+            )
             self._conn.commit()
+
+
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    @staticmethod
+    def make_title(text: str) -> str:
+        cleaned = re.sub(r"https?://\S+", "", text)
+        cleaned = " ".join(cleaned.replace("\n", " ").split())
+        cleaned = cleaned.strip(".,;:!?-— ")
+        if not cleaned:
+            return SQLiteChatStore.DEFAULT_SESSION_TITLE
+        return cleaned[:40] + ("..." if len(cleaned) > 40 else "")
+
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        cleaned = " ".join(title.split())
+        return cleaned[:80] if cleaned else SQLiteChatStore.DEFAULT_SESSION_TITLE
+
+    def _get_active_session_id_locked(self, session: ChatSessionKey) -> int:
+        row = self._conn.execute(
+            """
+            SELECT session_id FROM active_sessions
+            WHERE chat_id = ? AND user_id = ? AND thread_id = ?
+            """,
+            (session.chat_id, session.user_id, session.normalized_thread_id),
+        ).fetchone()
+        if row is not None:
+            existing = self._conn.execute(
+                f"SELECT id FROM managed_sessions WHERE id = ? AND {self._session_owner_clause()} AND status = 'active'",
+                (int(row[0]), *self._session_owner_args(session)),
+            ).fetchone()
+            if existing is not None:
+                return int(row[0])
+            self._conn.execute(
+                "DELETE FROM active_sessions WHERE chat_id = ? AND user_id = ? AND thread_id = ?",
+                (session.chat_id, session.user_id, session.normalized_thread_id),
+            )
+        replacement = self._conn.execute(
+            f"""
+            SELECT id FROM managed_sessions
+            WHERE {self._session_owner_clause()} AND status = 'active'
+            ORDER BY updated_at DESC, id DESC LIMIT 1
+            """,
+            self._session_owner_args(session),
+        ).fetchone()
+        if replacement is not None:
+            replacement_id = int(replacement[0])
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO active_sessions (chat_id, user_id, thread_id, session_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session.chat_id, session.user_id, session.normalized_thread_id, replacement_id),
+            )
+            return replacement_id
+        return self._create_session_locked(session, self.DEFAULT_SESSION_TITLE)
+
+    def _create_session_locked(self, session: ChatSessionKey, title: str) -> int:
+        now = self._now()
+        cursor = self._conn.execute(
+            """
+            INSERT INTO managed_sessions (chat_id, user_id, thread_id, title, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'active', ?, ?)
+            """,
+            (session.chat_id, session.user_id, session.thread_id, self._normalize_title(title), now, now),
+        )
+        session_id = int(cursor.lastrowid)
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO active_sessions (chat_id, user_id, thread_id, session_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (session.chat_id, session.user_id, session.normalized_thread_id, session_id),
+        )
+        return session_id
+
+    def ensure_active_managed_session(self, session: ChatSessionKey) -> int:
+        with self._lock:
+            session_id = self._get_active_session_id_locked(session)
+            self._conn.commit()
+            return session_id
+
+    def create_managed_session(self, session: ChatSessionKey, title: str = "New session") -> int:
+        with self._lock:
+            session_id = self._create_session_locked(session, title)
+            self._conn.commit()
+            return session_id
+
+    def _session_owner_clause(self) -> str:
+        return "chat_id = ? AND user_id = ? AND COALESCE(thread_id, -1) = ?"
+
+    def _session_owner_args(self, session: ChatSessionKey) -> tuple[int, int, int]:
+        return (session.chat_id, session.user_id, session.normalized_thread_id)
+
+    def list_managed_sessions(self, session: ChatSessionKey, include_archived: bool = True) -> list[dict[str, object]]:
+        with self._lock:
+            active_id = self._get_active_session_id_locked(session)
+            status_filter = "" if include_archived else "AND status = 'active'"
+            rows = self._conn.execute(
+                f"""
+                SELECT id, title, status, created_at, updated_at
+                FROM managed_sessions
+                WHERE {self._session_owner_clause()} {status_filter}
+                ORDER BY updated_at DESC, id DESC
+                """,
+                self._session_owner_args(session),
+            ).fetchall()
+            self._conn.commit()
+        return [
+            {
+                "id": int(row[0]),
+                "title": row[1],
+                "status": row[2],
+                "created_at": row[3],
+                "updated_at": row[4],
+                "active": int(row[0]) == active_id,
+            }
+            for row in rows
+        ]
+
+    def switch_managed_session(self, session: ChatSessionKey, session_id: int) -> dict[str, object]:
+        with self._lock:
+            row = self._conn.execute(
+                f"""
+                SELECT id, title, status FROM managed_sessions
+                WHERE id = ? AND {self._session_owner_clause()}
+                """,
+                (session_id, *self._session_owner_args(session)),
+            ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            now = self._now()
+            if row[2] == "archived":
+                self._conn.execute("UPDATE managed_sessions SET status = 'active', updated_at = ? WHERE id = ?", (now, session_id))
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO active_sessions (chat_id, user_id, thread_id, session_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                (session.chat_id, session.user_id, session.normalized_thread_id, session_id),
+            )
+            self._conn.commit()
+            return {"id": int(row[0]), "title": row[1], "status": "active"}
+
+    def rename_managed_session(
+        self,
+        session: ChatSessionKey,
+        session_id: int,
+        title: str,
+    ) -> dict[str, object]:
+        normalized_title = self._normalize_title(title)
+        with self._lock:
+            row = self._conn.execute(
+                f"""
+                SELECT id FROM managed_sessions
+                WHERE id = ? AND {self._session_owner_clause()}
+                """,
+                (session_id, *self._session_owner_args(session)),
+            ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            now = self._now()
+            self._conn.execute(
+                "UPDATE managed_sessions SET title = ?, updated_at = ? WHERE id = ?",
+                (normalized_title, now, session_id),
+            )
+            self._conn.commit()
+        return {"id": session_id, "title": normalized_title, "status": "active"}
+
+    def archive_managed_session(self, session: ChatSessionKey, session_id: int) -> None:
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT id FROM managed_sessions WHERE id = ? AND {self._session_owner_clause()}",
+                (session_id, *self._session_owner_args(session)),
+            ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            self._conn.execute("UPDATE managed_sessions SET status = 'archived', updated_at = ? WHERE id = ?", (self._now(), session_id))
+            active_id = self._get_active_session_id_locked(session)
+            if active_id == session_id:
+                replacement = self._conn.execute(
+                    f"""
+                    SELECT id FROM managed_sessions
+                    WHERE {self._session_owner_clause()} AND status = 'active' AND id != ?
+                    ORDER BY updated_at DESC, id DESC LIMIT 1
+                    """,
+                    (*self._session_owner_args(session), session_id),
+                ).fetchone()
+                replacement_id = int(replacement[0]) if replacement else self._create_session_locked(session, self.DEFAULT_SESSION_TITLE)
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO active_sessions (chat_id, user_id, thread_id, session_id) VALUES (?, ?, ?, ?)",
+                    (session.chat_id, session.user_id, session.normalized_thread_id, replacement_id),
+                )
+            self._conn.commit()
+
+    def delete_managed_session(self, session: ChatSessionKey, session_id: int) -> None:
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT id FROM managed_sessions WHERE id = ? AND {self._session_owner_clause()}",
+                (session_id, *self._session_owner_args(session)),
+            ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            active_id = self._get_active_session_id_locked(session)
+            self._conn.execute("DELETE FROM chat_messages WHERE managed_session_id = ?", (session_id,))
+            self._conn.execute("DELETE FROM managed_sessions WHERE id = ?", (session_id,))
+            if active_id == session_id:
+                replacement = self._conn.execute(
+                    f"""
+                    SELECT id FROM managed_sessions
+                    WHERE {self._session_owner_clause()} AND status = 'active'
+                    ORDER BY updated_at DESC, id DESC LIMIT 1
+                    """,
+                    self._session_owner_args(session),
+                ).fetchone()
+                replacement_id = int(replacement[0]) if replacement else self._create_session_locked(session, self.DEFAULT_SESSION_TITLE)
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO active_sessions (chat_id, user_id, thread_id, session_id) VALUES (?, ?, ?, ?)",
+                    (session.chat_id, session.user_id, session.normalized_thread_id, replacement_id),
+                )
+            self._conn.commit()
+
+    def get_active_managed_session(self, session: ChatSessionKey) -> dict[str, object]:
+        with self._lock:
+            session_id = self._get_active_session_id_locked(session)
+            row = self._conn.execute("SELECT id, title, status, created_at, updated_at FROM managed_sessions WHERE id = ?", (session_id,)).fetchone()
+            self._conn.commit()
+        return {"id": int(row[0]), "title": row[1], "status": row[2], "created_at": row[3], "updated_at": row[4]}
 
     def append_message(self, session: ChatSessionKey, role: str, content: str) -> None:
         with self._lock:
+            managed_session_id = self._get_active_session_id_locked(session)
             self._conn.execute(
                 """
-                INSERT INTO chat_messages (chat_id, user_id, thread_id, role, content)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO chat_messages (chat_id, user_id, thread_id, managed_session_id, role, content)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.chat_id,
                     session.user_id,
                     session.thread_id,
+                    managed_session_id,
                     role,
                     content,
                 ),
             )
+            self._conn.execute("UPDATE managed_sessions SET updated_at = ? WHERE id = ?", (self._now(), managed_session_id))
             self._conn.commit()
 
     def append_message_pair(
@@ -124,20 +421,25 @@ class SQLiteChatStore:
         assistant_content: str,
     ) -> None:
         with self._lock:
+            managed_session_id = self._get_active_session_id_locked(session)
+            row = self._conn.execute("SELECT title FROM managed_sessions WHERE id = ?", (managed_session_id,)).fetchone()
+            if row and row[0] == self.DEFAULT_SESSION_TITLE:
+                self._conn.execute("UPDATE managed_sessions SET title = ? WHERE id = ?", (self.make_title(user_content), managed_session_id))
             self._conn.execute(
                 """
-                INSERT INTO chat_messages (chat_id, user_id, thread_id, role, content)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO chat_messages (chat_id, user_id, thread_id, managed_session_id, role, content)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (session.chat_id, session.user_id, session.thread_id, "user", user_content),
+                (session.chat_id, session.user_id, session.thread_id, managed_session_id, "user", user_content),
             )
             self._conn.execute(
                 """
-                INSERT INTO chat_messages (chat_id, user_id, thread_id, role, content)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO chat_messages (chat_id, user_id, thread_id, managed_session_id, role, content)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (session.chat_id, session.user_id, session.thread_id, "assistant", assistant_content),
+                (session.chat_id, session.user_id, session.thread_id, managed_session_id, "assistant", assistant_content),
             )
+            self._conn.execute("UPDATE managed_sessions SET updated_at = ? WHERE id = ?", (self._now(), managed_session_id))
             self._conn.commit()
 
     def get_recent_messages(
@@ -146,27 +448,23 @@ class SQLiteChatStore:
         limit: int,
     ) -> list[dict[str, str]]:
         with self._lock:
+            managed_session_id = self._get_active_session_id_locked(session)
             rows = self._conn.execute(
                 """
                 SELECT role, content
                 FROM chat_messages
-                WHERE (
-                    chat_id = ?
-                    AND user_id = ?
-                    AND COALESCE(thread_id, -1) = ?
-                )
+                WHERE managed_session_id = ?
                 OR (
                     ? = 1
                     AND chat_id IS NULL
                     AND user_id = ?
+                    AND managed_session_id IS NULL
                 )
                 ORDER BY id DESC
                 LIMIT ?
                 """,
                 (
-                    session.chat_id,
-                    session.user_id,
-                    session.normalized_thread_id,
+                    managed_session_id,
                     1 if session.supports_legacy_private_history else 0,
                     session.user_id,
                     limit,
@@ -177,27 +475,14 @@ class SQLiteChatStore:
 
     def clear_session_history(self, session: ChatSessionKey) -> None:
         with self._lock:
+            managed_session_id = self._get_active_session_id_locked(session)
             self._conn.execute(
-                """
-                DELETE FROM chat_messages
-                WHERE (
-                    chat_id = ?
-                    AND user_id = ?
-                    AND COALESCE(thread_id, -1) = ?
-                )
-                OR (
-                    ? = 1
-                    AND chat_id IS NULL
-                    AND user_id = ?
-                )
-                """,
-                (
-                    session.chat_id,
-                    session.user_id,
-                    session.normalized_thread_id,
-                    1 if session.supports_legacy_private_history else 0,
-                    session.user_id,
-                ),
+                "DELETE FROM chat_messages WHERE managed_session_id = ?",
+                (managed_session_id,),
+            )
+            self._conn.execute(
+                "UPDATE managed_sessions SET title = ?, updated_at = ? WHERE id = ?",
+                (self.DEFAULT_SESSION_TITLE, self._now(), managed_session_id),
             )
             self._conn.commit()
 
