@@ -301,7 +301,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception:
         logging.exception("Failed to fetch model list for /model")
         await update.message.reply_text(
-            "Failed to validate model ID from the current provider. Check provider config and try again."
+            "获取模型列表失败，请检查供应商配置后重试。"
         )
         return
 
@@ -309,7 +309,7 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if requested_model in available_set:
         if requested_model == provider.current_model:
             await update.message.reply_text(
-                f"Provider {provider.name} is already using {requested_model}."
+                f"{provider.name} 已在使用 {requested_model}。"
             )
             return
         try:
@@ -320,12 +320,11 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception:
             logging.exception("Failed to persist runtime config for /model")
             await update.message.reply_text(
-                f"Failed to save the selected model to {CONFIG_PATH}. Please try again."
+                f"保存模型配置失败，请重试。"
             )
             return
         await update.message.reply_text(
-            f"Provider {updated_provider.name} model set to {requested_model}.\n"
-            f"Saved to {CONFIG_PATH}."
+            f"已将 {updated_provider.name} 的模型切换为 {requested_model}。"
         )
         return
 
@@ -336,13 +335,13 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         hint = "\n".join(f"- {model_id}" for model_id in prefix_matches[:10])
         extra = "\n..." if len(prefix_matches) > 10 else ""
         await update.message.reply_text(
-            "Model ID seems incomplete. Please provide a full model ID.\n"
-            f"Matches:\n{hint}{extra}"
+            "模型 ID 不完整，请输入完整的模型 ID。\n"
+            f"匹配项:\n{hint}{extra}"
         )
         return
 
     await update.message.reply_text(
-        "Invalid model ID for the current provider. Use /models to open the provider and model menu."
+        "无效的模型 ID，请使用 /models 菜单选择模型。"
     )
 
 
@@ -369,17 +368,17 @@ async def reasoning_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         normalized_effort = normalize_reasoning_effort(requested_effort)
     except RuntimeError:
         await update.message.reply_text(
-            "Invalid reasoning effort.\n"
-            "Use <code>default</code> or one of: "
-            f"<code>{'</code>, <code>'.join(REASONING_EFFORT_VALUES)}</code>.",
+            "无效的推理强度。\n"
+            "可选值: <code>default</code> 或 "
+            f"<code>{'</code>, <code>'.join(REASONING_EFFORT_VALUES)}</code>。",
             parse_mode=ParseMode.HTML,
         )
         return
 
     if normalized_effort == provider.reasoning_effort:
         await update.message.reply_text(
-            f"Provider {provider.name} is already using "
-            f"{format_reasoning_effort(provider.reasoning_effort)} reasoning."
+            f"{provider.name} 已在使用 "
+            f"{format_reasoning_effort(provider.reasoning_effort)} 推理强度。"
         )
         return
 
@@ -391,14 +390,13 @@ async def reasoning_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except Exception:
         logging.exception("Failed to persist runtime config for /reasoning")
         await update.message.reply_text(
-            f"Failed to save the selected reasoning effort to {CONFIG_PATH}. Please try again."
+            f"保存推理强度配置失败，请重试。"
         )
         return
 
     await update.message.reply_text(
-        f"Provider {updated_provider.name} reasoning effort set to "
-        f"{format_reasoning_effort(updated_provider.reasoning_effort)}.\n"
-        f"Saved to {CONFIG_PATH}."
+        f"已将 {updated_provider.name} 的推理强度设为 "
+        f"{format_reasoning_effort(updated_provider.reasoning_effort)}。"
     )
 
 
@@ -820,25 +818,18 @@ async def provider_callback_router(update: Update, context: ContextTypes.DEFAULT
                     return
 
                 model_id = ids[index]
-                current_model = provider.current_model
-                if model_id != current_model:
-                    provider = runtime_config_store.set_provider_current_model(
-                        provider.id,
-                        model_id,
-                    )
-                await query.answer(
-                    "Already using this model."
-                    if model_id == current_model
-                    else "Provider model updated."
+                provider = runtime_config_store.set_provider_current_model(
+                    provider.id,
+                    model_id,
                 )
+                await query.answer(f"✅ 已将模型设置成 {provider.name}/{model_id}")
+                # Delete the menu and send a confirmation message
                 if query.message:
                     await try_delete_message(context, query.message.chat_id, query.message.message_id)
-                    if model_id != current_model:
-                        await query.message.reply_text(
-                            f"Provider {provider.name} model set to <code>{html.escape(model_id)}</code>.\n"
-                            f"Saved to {CONFIG_PATH}.",
-                            parse_mode=ParseMode.HTML,
-                        )
+                    await query.message.reply_text(
+                        f"✅ 已将模型设置成 {html.escape(provider.name)}/{html.escape(model_id)}。",
+                        parse_mode=ParseMode.HTML,
+                    )
                 return
 
         await query.answer()
