@@ -291,13 +291,20 @@ async def _send_rich_message(
     raw_text: str | None = None,
     reply_to_message_id: int | None = None,
 ) -> None:
-    """Send a rich message with native Telegram table support."""
+    """Send a rich message via Telegram Bot API 10.1 Rich Messages."""
     answer_text = text
+    reasoning_text = ""
     if raw_text:
-        _, extracted = extract_think_sections(raw_text)
+        reasoning_text, extracted = extract_think_sections(raw_text)
         if extracted:
             answer_text = extracted
-    rich_message: dict = {"markdown": answer_text}
+    parts: list[str] = []
+    if reasoning_text:
+        quoted = "\n".join(f"> {line}" for line in reasoning_text.splitlines())
+        parts.append(f"{quoted}\n")
+    parts.append(answer_text)
+    markdown_content = "\n\n".join(parts)
+    rich_message: dict = {"markdown": markdown_content}
     api_kwargs: dict = {"rich_message": rich_message}
     if reply_to_message_id:
         api_kwargs["reply_parameters"] = {"message_id": reply_to_message_id}
@@ -314,13 +321,8 @@ async def finalize_reply(
     bot=None,
     reply_to_message_id: int | None = None,
 ) -> None:
-    # Check if the response contains tables - use rich message for native table rendering
-    answer_text = text
-    if raw_text:
-        _, extracted = extract_think_sections(raw_text)
-        if extracted:
-            answer_text = extracted
-    if has_markdown_table(answer_text) and bot is not None:
+    # Always try rich message first (Bot API 10.1)
+    if bot is not None:
         try:
             await _send_rich_message(
                 bot,
@@ -337,6 +339,7 @@ async def finalize_reply(
         except Exception:
             logging.warning("Rich message send failed, falling back to HTML", exc_info=True)
 
+    # Fallback: old HTML mode
     chunks = build_reply_html_chunks(text, raw_text=raw_text)
 
     async def _edit_with_markup_fallback(content: str) -> None:
