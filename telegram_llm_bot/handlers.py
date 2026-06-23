@@ -227,7 +227,14 @@ async def switch_session_command(update: Update, context: ContextTypes.DEFAULT_T
     except (ValueError, KeyError):
         await update.message.reply_text("Session not found. Use /sessions to list sessions.")
         return
-    await update.message.reply_text(f"Switched to session #{switched['id']}: {switched['title']}")
+    switch_msg = await update.message.reply_text(f"已切换到会话 #{switched['id']}: {switched['title']}")
+    # Resend last message of the switched session as a blockquote
+    recent = await asyncio.to_thread(chat_store.get_recent_messages, session, 1)
+    if recent:
+        await update.message.reply_text(
+            f"以下是该会话的最后一条消息：\n\n<blockquote>{html.escape(recent[-1]['content'])}</blockquote>",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def delete_session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -601,12 +608,20 @@ async def session_callback_router(update: Update, context: ContextTypes.DEFAULT_
             if len(parts) < 3:
                 raise ValueError("missing session id")
             item = await asyncio.to_thread(chat_store.switch_managed_session, session, int(parts[2]))
-            await query.answer(f"Switched to #{item['id']}")
+            await query.answer(f"已切换到 #{item['id']}")
             if query.message:
                 await try_delete_message(context, query.message.chat_id, query.message.message_id)
-                await query.message.reply_text(
-                    f"Switched to session #{item['id']}: {item['title']}"
+                # Get last message of the switched session
+                recent = await asyncio.to_thread(chat_store.get_recent_messages, session, 1)
+                last_msg = recent[-1]["content"] if recent else None
+                switch_msg = await query.message.reply_text(
+                    f"已切换到会话 #{item['id']}: {item['title']}"
                 )
+                if last_msg:
+                    await query.message.reply_text(
+                        f"以下是该会话的最后一条消息：\n\n<blockquote>{html.escape(last_msg)}</blockquote>",
+                        parse_mode=ParseMode.HTML,
+                    )
             return
         elif action == "rename":
             if len(parts) < 3:

@@ -148,6 +148,7 @@ async def _stream_llm_answer_via_responses(
     history_messages: list[dict[str, str]],
     user_content: str | list,
     out_message: Message,
+    bot,
 ) -> str:
     client = build_openai_client(provider)
     stream_kwargs: dict[str, object] = {
@@ -168,7 +169,7 @@ async def _stream_llm_answer_via_responses(
     if not answer:
         answer = visible_text.strip()
     answer = answer or "I could not generate a response. Please try again."
-    await finalize_reply(out_message, answer, raw_text=model_text)
+    await finalize_reply(out_message, answer, raw_text=model_text, bot=bot)
     stored_text = model_text.strip() or answer
     return stored_text
 
@@ -178,6 +179,7 @@ async def _stream_llm_answer_via_chat_completions(
     history_messages: list[dict[str, str]],
     user_content: str | list,
     out_message: Message,
+    bot,
 ) -> str:
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(
@@ -242,7 +244,7 @@ async def _stream_llm_answer_via_chat_completions(
     if not answer:
         answer = visible_text.strip()
     answer = answer or "I could not generate a response. Please try again."
-    await finalize_reply(out_message, answer, raw_text=raw_text)
+    await finalize_reply(out_message, answer, raw_text=raw_text, bot=bot)
     stored_text = raw_text.strip() or answer
     return stored_text
 
@@ -252,6 +254,7 @@ async def stream_llm_answer(
     user_content: str | list,
     out_message: Message,
     user_provider_id: str | None = None,
+    bot=None,
 ) -> str:
     history_messages = await asyncio.to_thread(
         chat_store.get_recent_messages,
@@ -266,6 +269,7 @@ async def stream_llm_answer(
             history_messages,
             user_content,
             out_message,
+            bot,
         )
 
     if _prefer_chat_completions_for_provider(provider):
@@ -275,6 +279,7 @@ async def stream_llm_answer(
             history_messages,
             user_content,
             out_message,
+            bot,
         )
 
     supports_responses = provider_capability_cache.get_supports_responses(provider)
@@ -284,6 +289,7 @@ async def stream_llm_answer(
             history_messages,
             user_content,
             out_message,
+            bot,
         )
 
     try:
@@ -292,6 +298,7 @@ async def stream_llm_answer(
             history_messages,
             user_content,
             out_message,
+            bot,
         )
         provider_capability_cache.set_supports_responses(provider, True)
         return answer
@@ -315,6 +322,7 @@ async def stream_llm_answer(
             history_messages,
             user_content,
             fallback_message,
+            bot,
         )
 
 
@@ -355,6 +363,7 @@ async def respond(
             user_content,
             out_message,
             user_provider_id=user_provider_id,
+            bot=context.bot,
         )
         await asyncio.to_thread(chat_store.append_message_pair, session, history_text, answer)
     except asyncio.CancelledError:

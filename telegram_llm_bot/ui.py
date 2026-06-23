@@ -23,6 +23,7 @@ from .utils import (
     extract_think_sections,
     format_base_url,
     format_reasoning_effort,
+    has_markdown_table,
     markdown_to_telegram_html,
     mask_secret,
     split_text_for_telegram,
@@ -283,7 +284,59 @@ def build_reply_html_chunks(text: str, raw_text: str | None = None) -> list[str]
     return [answer_chunks[0], *answer_chunks[1:], *reasoning_chunks]
 
 
-async def finalize_reply(message: Message, text: str, raw_text: str | None = None) -> None:
+async def _send_rich_message(
+    bot,
+    chat_id: int,
+    text: str,
+    raw_text: str | None = None,
+    reply_to_message_id: int | None = None,
+) -> None:
+    """Send a rich message with native Telegram table support."""
+    answer_text = text
+    if raw_text:
+        _, extracted = extract_think_sections(raw_text)
+        if extracted:
+            answer_text = extracted
+    rich_message: dict = {"markdown": answer_text}
+    api_kwargs: dict = {"rich_message": rich_message}
+    if reply_to_message_id:
+        api_kwargs["reply_parameters"] = {"message_id": reply_to_message_id}
+    await bot.do_api_request(
+        endpoint="sendRichMessage",
+        api_kwargs={"chat_id": chat_id, **api_kwargs},
+    )
+
+
+async def finalize_reply(
+    message: Message,
+    text: str,
+    raw_text: str | None = None,
+    bot=None,
+    reply_to_message_id: int | None = None,
+) -> None:
+    # Check if the response contains tables - use rich message for native table rendering
+    answer_text = text
+    if raw_text:
+        _, extracted = extract_think_sections(raw_text)
+        if extracted:
+            answer_text = extracted
+    if has_markdown_table(answer_text) and bot is not None:
+        try:
+            await _send_rich_message(
+                bot,
+                message.chat_id,
+                text,
+                raw_text=raw_text,
+                reply_to_message_id=reply_to_message_id,
+            )
+            try:
+                await message.delete()
+            except Exception:
+                pass
+            return
+        except Exception:
+            logging.warning("Rich message send failed, falling back to HTML", exc_info=True)
+
     chunks = build_reply_html_chunks(text, raw_text=raw_text)
 
     async def _edit_with_markup_fallback(content: str) -> None:

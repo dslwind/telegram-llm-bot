@@ -240,6 +240,35 @@ def split_text_for_telegram(text: str) -> list[str]:
     return chunks
 
 
+def has_markdown_table(text: str) -> bool:
+    """Check if text contains a markdown table (lines with | separators and a separator row)."""
+    if not text:
+        return False
+    lines = text.splitlines()
+    found_separator = False
+    found_data = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if found_data and found_separator:
+                return True
+            found_data = False
+            found_separator = False
+            continue
+        if "|" not in stripped:
+            if found_data and found_separator:
+                return True
+            found_data = False
+            found_separator = False
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if all(re.match(r"^:?-{3,}:?$", c.strip()) for c in cells if c.strip()):
+            found_separator = True
+        else:
+            found_data = True
+    return found_data and found_separator
+
+
 def markdown_to_telegram_html(text: str) -> str:
     if not text:
         return text
@@ -266,9 +295,56 @@ def markdown_to_telegram_html(text: str) -> str:
         url = html.escape(match.group(2), quote=True)
         return stash(f'<a href="{url}">{label}</a>')
 
+    def convert_table(table_text: str) -> str:
+        lines = [l.strip() for l in table_text.strip().splitlines() if l.strip()]
+        if len(lines) < 2:
+            return table_text
+        # Parse all rows
+        rows: list[list[str]] = []
+        for line in lines:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            # Skip separator row (---, :---:, etc.)
+            if all(re.match(r"^:?-{3,}:?$", c.strip()) for c in cells if c.strip()):
+                continue
+            rows.append(cells)
+        if not rows:
+            return table_text
+        # Calculate column widths
+        num_cols = max(len(r) for r in rows)
+        for r in rows:
+            while len(r) < num_cols:
+                r.append("")
+        col_widths = [0] * num_cols
+        for r in rows:
+            for i, c in enumerate(r):
+                # Use display width (CJK chars count as 2)
+                w = sum(2 if ord(ch) > 0x2E80 else 1 for ch in c)
+                col_widths[i] = max(col_widths[i], w)
+        # Build formatted table
+        def pad_cell(text: str, width: int) -> str:
+            dw = sum(2 if ord(ch) > 0x2E80 else 1 for ch in text)
+            return text + " " * (width - dw)
+        out_lines: list[str] = []
+        for idx, r in enumerate(rows):
+            cells = [pad_cell(c, col_widths[i]) for i, c in enumerate(r)]
+            out_lines.append("  ".join(cells))
+            # Add separator after header row
+            if idx == 0:
+                out_lines.append("  ".join("─" * w for w in col_widths))
+        return "\n".join(out_lines)
+
+    def replace_table(match: re.Match[str]) -> str:
+        return stash(f"<pre>{html.escape(convert_table(match.group(0)))}</pre>")
+
     text = re.sub(r"```(?:[^\n`]*)\n?(.*?)```", replace_code_block, text, flags=re.DOTALL)
     text = re.sub(r"`([^`\n]+)`", replace_inline_code, text)
     text = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", replace_link, text)
+
+    # Convert markdown tables to <pre> blocks
+    # A table is 2+ consecutive lines where each line has | separators,
+    # and one line is a separator row (| --- | --- |)
+    table_pattern = r"(?:^\|.+\|[ \t]*\n?){2,}"
+    text = re.sub(table_pattern, replace_table, text, flags=re.MULTILINE)
 
     escaped = html.escape(text)
     escaped = re.sub(r"(?m)^\s*#{1,6}\s+(.+)$", r"<b>\1</b>", escaped)
