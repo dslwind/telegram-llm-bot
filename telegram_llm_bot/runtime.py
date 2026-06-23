@@ -93,7 +93,11 @@ def get_active_model() -> str:
 
 
 def build_openai_client(provider: ProviderConfig) -> AsyncOpenAI:
-    client_kwargs = {"api_key": provider.api_key}
+    client_kwargs: dict = {
+        "api_key": provider.api_key,
+        "max_retries": 3,
+        "timeout": 120,
+    }
     if provider.base_url:
         client_kwargs["base_url"] = provider.base_url
     return AsyncOpenAI(**client_kwargs)

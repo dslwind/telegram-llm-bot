@@ -347,25 +347,45 @@ async def respond(
         )
         return
     out_message: Message | None = None
+    max_attempts = 3
     try:
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id,
-            action=ChatAction.TYPING,
-        )
-        out_message = await update.message.reply_text("Thinking...")
-        session_request_gate.set_message_ref(
-            session,
-            out_message.chat_id,
-            out_message.message_id,
-        )
-        answer = await stream_llm_answer(
-            session,
-            user_content,
-            out_message,
-            user_provider_id=user_provider_id,
-            bot=context.bot,
-        )
-        await asyncio.to_thread(chat_store.append_message_pair, session, history_text, answer)
+        for attempt in range(1, max_attempts + 1):
+            await context.bot.send_chat_action(
+                chat_id=update.effective_chat.id,
+                action=ChatAction.TYPING,
+            )
+            out_message = await update.message.reply_text("Thinking...")
+            session_request_gate.set_message_ref(
+                session,
+                out_message.chat_id,
+                out_message.message_id,
+            )
+            try:
+                answer = await stream_llm_answer(
+                    session,
+                    user_content,
+                    out_message,
+                    user_provider_id=user_provider_id,
+                    bot=context.bot,
+                )
+                await asyncio.to_thread(chat_store.append_message_pair, session, history_text, answer)
+                return
+            except Exception as exc:
+                if attempt < max_attempts:
+                    logging.warning(
+                        "Attempt %d/%d failed for session %s, retrying: %s",
+                        attempt,
+                        max_attempts,
+                        session,
+                        exc,
+                    )
+                    try:
+                        await out_message.delete()
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1)
+                else:
+                    raise
     except asyncio.CancelledError:
         logging.info("Cancelled active request for chat session %s", session)
     except NetworkError:
